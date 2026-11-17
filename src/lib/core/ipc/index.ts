@@ -1,0 +1,610 @@
+/**
+ * Punto único de acceso al runtime de Rust.
+ *
+ * Ningún componente invoca el puente directamente: todo pasa por aquí, donde se
+ * centralizan el tipado y la traducción de errores. Biome rechaza cualquier
+ * importación de `@tauri-apps/api` fuera de esta carpeta, también en `.svelte`.
+ *
+ * Los tipos vienen de `#lib/bindings`, generados desde Rust con `ts-rs`; no se
+ * escriben a mano.
+ */
+
+import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import type {
+  AjustesEcualizador,
+  AlbumResumen,
+  Ambiente,
+  Apariencia,
+  ArtistaResumen,
+  AvisoReproductor,
+  ConsultaAlbumes,
+  ConsultaArtistas,
+  ConsultaPistas,
+  ConsultaPlaylists,
+  DatosCompletados,
+  Emparejar,
+  EstadoKaraoke,
+  EstadoMovil,
+  InformeDeSalud,
+  Inicio,
+  Instantanea,
+  Letra,
+  OrdenReproductor,
+  PaginaAlbumes,
+  PaginaArtistas,
+  PaginaPistas,
+  Pendiente,
+  Perfil,
+  PermisosRed,
+  PistaResumen,
+  PlaylistResumen,
+  PreseleccionEcualizador,
+  ProgresoImportacion,
+  Telefono,
+  UbicacionMusica
+} from '#lib/bindings/index.ts';
+import { COMANDOS_QUE_CAMBIAN, cambios } from '../cambios.svelte.ts';
+
+export type {
+  Acelerador,
+  AjustesEcualizador,
+  AjustesIa,
+  AlbumResumen,
+  Ambiente,
+  Apariencia,
+  ArtistaDelDia,
+  ArtistaResumen,
+  AvisoReproductor,
+  CandidatoRevisar,
+  Categoria,
+  Cifras,
+  ConsultaAlbumes,
+  ConsultaArtistas,
+  ConsultaPistas,
+  ConsultaPlaylists,
+  DatosAlbum,
+  DatosCompletados,
+  DatosPista,
+  Descubrimiento,
+  Emparejar,
+  EstadoAgregado,
+  EstadoCopia,
+  EstadoKaraoke,
+  EstadoMovil,
+  EstadoRed,
+  Gpu,
+  IdAgregado,
+  InformeDeSalud,
+  Inicio,
+  Instantanea,
+  Letra,
+  LineaLetra,
+  OrdenAlbumes,
+  OrdenArtistas,
+  OrdenPistas,
+  OrdenPlaylists,
+  OrdenReproductor,
+  PaginaAlbumes,
+  PaginaArtistas,
+  PaginaPistas,
+  Pendiente,
+  Perfil,
+  PermisosRed,
+  PistaEscuchada,
+  PistaResumen,
+  PlaylistResumen,
+  PoliticaDeRed,
+  PreseleccionEcualizador,
+  ProgresoImportacion,
+  ProveedorIa,
+  Qr,
+  ResumenCopia,
+  Servicio,
+  Telefono,
+  UbicacionMusica
+} from '#lib/bindings/index.ts';
+
+/** Error del runtime con su código canónico (ver `src-tauri/src/error.rs`). */
+export class NsError extends Error {
+  readonly code: string;
+
+  constructor(code: string) {
+    super(code);
+    this.name = 'NsError';
+    this.code = code;
+  }
+}
+
+export function aNsError(causa: unknown): NsError {
+  if (typeof causa === 'object' && causa !== null && 'code' in causa) {
+    const { code } = causa as { code: unknown };
+    if (typeof code === 'string') return new NsError(code);
+  }
+  // Un fallo sin código canónico se saltó el contrato. Su contenido no se
+  // propaga: podría llevar rutas del usuario.
+  return new NsError('INTERNAL');
+}
+
+export async function call<T>(comando: string, args?: Record<string, unknown>): Promise<T> {
+  let r: T;
+  try {
+    r = await invoke<T>(comando, args);
+  } catch (causa) {
+    throw aNsError(causa);
+  }
+  // Las vistas abiertas se refrescan solas (`cambios.svelte.ts`).
+  if (COMANDOS_QUE_CAMBIAN.has(comando)) cambios.avisar();
+  if (COMANDOS_RECORDADOS.has(comando)) recordar(clave(comando, args), r);
+  return r;
+}
+
+/**
+ * Muestra la ventana principal con la apariencia ya pintada.
+ *
+ * Nace oculta porque WebKit pinta primero el tema de fábrica y el usuario veía
+ * dos fotogramas negros. Se descartó mostrarla desde el `setup` de Rust: ocurre
+ * antes de que el webview aplique la caché y el tema guardado.
+ */
+export async function mostrarVentanaPrincipal(): Promise<void> {
+  try {
+    await getCurrentWindow().show();
+  } catch (causa) {
+    throw aNsError(causa);
+  }
+}
+
+/** Deja constancia en el registro de que la interfaz no pudo mostrar la ventana. */
+export function registrarVentanaNoVisible(): Promise<void> {
+  return call<void>('registrar_ventana_no_visible');
+}
+
+/*
+ * Lo último que respondieron las lecturas con que se pinta una vista, para que al
+ * volver a ella se vea al instante lo de la vez anterior mientras llega lo nuevo
+ * (stale-while-revalidate). Antes, cada vuelta a Inicio, Tu música o un álbum
+ * empezaba en blanco unos segundos. Solo en memoria y acotado: es una vista
+ * previa, no una copia de la base; la vista siempre vuelve a pedir y se queda con
+ * la respuesta nueva.
+ */
+const COMANDOS_RECORDADOS = new Set([
+  'inicio',
+  'perfil',
+  'resumen_escucha',
+  'playlists_listar',
+  'playlist',
+  'biblioteca_album',
+  'biblioteca_artista',
+  'biblioteca_albumes',
+  'biblioteca_artistas',
+  'biblioteca_pistas'
+]);
+const MAX_RECORDADOS = 80;
+const recordados = new Map<string, unknown>();
+
+function clave(comando: string, args?: Record<string, unknown>): string {
+  return args ? `${comando} ${JSON.stringify(args)}` : comando;
+}
+
+function recordar(k: string, valor: unknown): void {
+  recordados.delete(k);
+  recordados.set(k, valor);
+  if (recordados.size > MAX_RECORDADOS) {
+    const masVieja = recordados.keys().next().value;
+    if (masVieja !== undefined) recordados.delete(masVieja);
+  }
+}
+
+/** Lo que respondió la última vez esta lectura, si se recuerda. */
+export function recordado<T>(comando: string, args?: Record<string, unknown>): T | undefined {
+  return recordados.get(clave(comando, args)) as T | undefined;
+}
+
+/** Comprueba que el runtime responde y devuelve su versión. */
+export function salud(): Promise<InformeDeSalud> {
+  return call<InformeDeSalud>('salud');
+}
+
+/**
+ * Se suscribe a un evento del runtime. Devuelve la función que cancela la
+ * suscripción, que el componente llama al desmontarse.
+ */
+export function escuchar<T>(evento: string, cada: (carga: T) => void): Promise<UnlistenFn> {
+  return listen<T>(evento, (e) => cada(e.payload));
+}
+
+// --- Reproductor -----------------------------------------------------------------
+
+/** Lo que suena y la cola; `null` mientras el reproductor arranca. */
+export function reproductorEstado(): Promise<Instantanea | null> {
+  return call<Instantanea | null>('reproductor_estado');
+}
+
+/** Manda una orden. El resultado llega por el evento `reproductor:instantanea`. */
+export function reproductorOrden(orden: OrdenReproductor): Promise<void> {
+  return call<void>('reproductor_orden', { orden });
+}
+
+export function alCambiarElReproductor(cada: (i: Instantanea) => void): Promise<UnlistenFn> {
+  return escuchar<Instantanea>('reproductor:instantanea', cada);
+}
+
+export function alAvisarElReproductor(cada: (a: AvisoReproductor) => void): Promise<UnlistenFn> {
+  return escuchar<AvisoReproductor>('reproductor:aviso', cada);
+}
+
+/** Resúmenes de pistas, en el orden pedido; como mucho 500 por petición. */
+export function pistasResumen(ids: readonly number[]): Promise<PistaResumen[]> {
+  return call<PistaResumen[]>('pistas_resumen', { ids });
+}
+
+export type ClaseDePortada = 'pista' | 'album' | 'artista';
+
+/**
+ * La URL de una portada. El runtime la sirve por su esquema propio: en Windows,
+ * WebView2 lo expone como `http://portada.localhost`.
+ */
+/** La foto de perfil, si hay. */
+export function urlFotoPerfil(version?: number): string {
+  const windows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+  const base = windows ? 'http://portada.localhost/perfil' : 'portada://localhost/perfil';
+  return version ? `${base}?v=${version}` : base;
+}
+
+/** La portada que trae dentro un archivo de Por revisar. */
+export function urlPortadaPendiente(id: number): string {
+  const windows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+  return windows
+    ? `http://portada.localhost/pendiente/${id}`
+    : `portada://localhost/pendiente/${id}`;
+}
+
+export function urlPortada(clase: ClaseDePortada, id: number, tamano: number): string {
+  const ruta = `${clase}/${id}/${tamano}`;
+  const windows = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows');
+  return windows ? `http://portada.localhost/${ruta}` : `portada://localhost/${ruta}`;
+}
+
+// --- Biblioteca ------------------------------------------------------------------
+
+/** Un tramo de canciones (como mucho 500) y el total que cumple la consulta. */
+export function bibliotecaPistas(
+  consulta: ConsultaPistas,
+  desde: number,
+  limite: number
+): Promise<PaginaPistas> {
+  return call<PaginaPistas>('biblioteca_pistas', { consulta, desde, limite });
+}
+
+export function bibliotecaAlbumes(
+  consulta: ConsultaAlbumes,
+  desde: number,
+  limite: number
+): Promise<PaginaAlbumes> {
+  return call<PaginaAlbumes>('biblioteca_albumes', { consulta, desde, limite });
+}
+
+export function bibliotecaArtistas(
+  consulta: ConsultaArtistas,
+  desde: number,
+  limite: number
+): Promise<PaginaArtistas> {
+  return call<PaginaArtistas>('biblioteca_artistas', { consulta, desde, limite });
+}
+
+/** Reproduce la lista desde la canción en `indice`. */
+export function reproducirLista(consulta: ConsultaPistas, indice: number): Promise<void> {
+  return call<void>('reproducir_lista', { consulta, indice });
+}
+
+export function fijarFavorita(pistaId: number, favorita: boolean): Promise<void> {
+  return call<void>('fijar_favorita', { pistaId, favorita });
+}
+
+/** Borra una pista de la biblioteca y opcionalmente su archivo del disco. */
+export function borrarPista(id: number, borrarArchivo: boolean): Promise<void> {
+  return call<void>('borrar_pista', { id, borrarArchivo });
+}
+
+/** Muestra el archivo de una pista en el gestor de archivos nativo del sistema. */
+export function mostrarEnExplorador(pistaId: number): Promise<void> {
+  return call<void>('mostrar_en_explorador', { pistaId });
+}
+
+/** Reproduce una canción para redescubrir (tecla D) y dice cuál; `null` si no hay otra. */
+export function sorprendeme(): Promise<PistaResumen | null> {
+  return call<PistaResumen | null>('sorprendeme');
+}
+
+export function bibliotecaAlbum(id: number): Promise<AlbumResumen | null> {
+  return call<AlbumResumen | null>('biblioteca_album', { id });
+}
+
+export function bibliotecaArtista(id: number): Promise<ArtistaResumen | null> {
+  return call<ArtistaResumen | null>('biblioteca_artista', { id });
+}
+
+// --- Playlists -------------------------------------------------------------------
+
+export function playlistsListar(consulta: ConsultaPlaylists): Promise<PlaylistResumen[]> {
+  return call<PlaylistResumen[]>('playlists_listar', { consulta });
+}
+
+export function playlist(id: number): Promise<PlaylistResumen | null> {
+  return call<PlaylistResumen | null>('playlist', { id });
+}
+
+export function playlistPistas(id: number, desde: number, limite: number): Promise<PaginaPistas> {
+  return call<PaginaPistas>('playlist_pistas', { id, desde, limite });
+}
+
+export function reproducirPlaylist(id: number, indice: number): Promise<void> {
+  return call<void>('reproducir_playlist', { id, indice });
+}
+
+export function crearPlaylist(nombre: string, descripcion: string | null): Promise<number> {
+  return call<number>('crear_playlist', { nombre, descripcion });
+}
+
+export function renombrarPlaylist(
+  id: number,
+  nombre: string,
+  descripcion: string | null
+): Promise<void> {
+  return call<void>('renombrar_playlist', { id, nombre, descripcion });
+}
+
+export function borrarPlaylist(id: number): Promise<void> {
+  return call<void>('borrar_playlist', { id });
+}
+
+/** Las playlists manuales que ya tienen la canción. */
+export function playlistsDePista(pistaId: number): Promise<number[]> {
+  return call<number[]>('playlists_de_pista', { pistaId });
+}
+
+/** Una copia manual con las mismas canciones; devuelve su id. */
+export function duplicarPlaylist(id: number): Promise<number> {
+  return call<number>('duplicar_playlist', { id });
+}
+
+export function vaciarPlaylist(id: number): Promise<void> {
+  return call<void>('vaciar_playlist', { id });
+}
+
+/** La playlist entera a la cola; devuelve cuántas canciones entraron. */
+export function encolarPlaylist(id: number, justoDespues: boolean): Promise<number> {
+  return call<number>('encolar_playlist', { id, justoDespues });
+}
+
+/** Añade al final sin repetir; devuelve cuántas entraron. */
+export function agregarAPlaylist(id: number, pistas: number[]): Promise<number> {
+  return call<number>('agregar_a_playlist', { id, pistas });
+}
+
+export function quitarDePlaylist(id: number, pistaId: number): Promise<void> {
+  return call<void>('quitar_de_playlist', { id, pistaId });
+}
+
+export function moverEnPlaylist(id: number, desde: number, hasta: number): Promise<void> {
+  return call<void>('mover_en_playlist', { id, desde, hasta });
+}
+
+export function anclarPlaylist(id: number, anclada: boolean): Promise<void> {
+  return call<void>('anclar_playlist', { id, anclada });
+}
+
+// --- Vista de reproducción ------------------------------------------------------
+
+/** La letra ya normalizada: sincronizada, plana o ninguna. */
+export function letraDePista(pistaId: number): Promise<Letra> {
+  return call<Letra>('letra_de_pista', { pistaId });
+}
+
+/** El color del fondo de la vista de reproducción, en HSL de 0 a 1. */
+export function ambienteDePista(pistaId: number): Promise<Ambiente> {
+  return call<Ambiente>('ambiente_de_pista', { pistaId });
+}
+
+/** La forma de onda de una pista: mil picos de 0 a 255, o ninguno si aún no se ha medido. */
+export function formaDeOnda(pistaId: number): Promise<number[]> {
+  return call<number[]>('forma_de_onda', { pistaId });
+}
+
+/** Abre el minirreproductor flotante, o lo trae delante. */
+export function abrirMinirreproductor(): Promise<void> {
+  return call<void>('abrir_minirreproductor');
+}
+
+/** Esconde el minirreproductor; con `volver`, trae delante la ventana principal. */
+export function dejarMinirreproductor(volver: boolean): Promise<void> {
+  return call<void>('dejar_minirreproductor', { volver });
+}
+
+/** Pone o quita la ventana en pantalla completa (F11) en las fiestas. */
+export function fijarPantallaCompleta(activa: boolean): Promise<void> {
+  return getCurrentWindow().setFullscreen(activa);
+}
+
+/** Si la ventana está en pantalla completa: también se entra y sale desde el gestor de ventanas. */
+export function estaEnPantallaCompleta(): Promise<boolean> {
+  return getCurrentWindow().isFullscreen();
+}
+
+// --- Preferencias -------------------------------------------------------------------
+
+export function apariencia(): Promise<Apariencia> {
+  return call<Apariencia>('apariencia');
+}
+
+/** Solo las claves que admite `src-tauri/src/preferencias.rs`. */
+export function guardarPreferencia(clave: string, valor: unknown): Promise<void> {
+  return call<void>('guardar_preferencia', { clave, valor });
+}
+
+export function ecualizador(): Promise<AjustesEcualizador> {
+  return call<AjustesEcualizador>('ecualizador');
+}
+
+export function preseleccionesEcualizador(): Promise<PreseleccionEcualizador[]> {
+  return call<PreseleccionEcualizador[]>('preselecciones_ecualizador');
+}
+
+export function carpetaMusica(): Promise<string | null> {
+  return call<string | null>('carpeta_musica');
+}
+
+/**
+ * Dónde vive tu música: la carpeta, cuántas canciones están en ella, si se perdió
+ * y si al arrancar se encontró sola en otro sitio.
+ */
+export function ubicacionMusica(): Promise<UbicacionMusica> {
+  return call<UbicacionMusica>('ubicacion_musica');
+}
+
+/**
+ * "Completar datos" de una pista sin verificar: la identifica de nuevo y le busca
+ * portada y letra, sin cambiar su id. Dice qué se añadió.
+ */
+export function completarDatos(pista: number): Promise<DatosCompletados> {
+  return call<DatosCompletados>('completar_datos', { pista });
+}
+
+/** Todo lo que muestra Inicio, en una sola petición. */
+export function inicio(): Promise<Inicio> {
+  return call<Inicio>('inicio');
+}
+
+/** Lo que el historial dice del usuario (Tu música). */
+export function perfil(): Promise<Perfil> {
+  return call<Perfil>('perfil');
+}
+
+/** Abre el selector nativo para cambiar la foto de perfil. Devuelve true si se cambió. */
+export function perfilCambiarFoto(): Promise<boolean> {
+  return call<boolean>('perfil_cambiar_foto');
+}
+
+// --- Karaoke ---------------------------------------------------------------------
+
+export function karaokeEstado(): Promise<EstadoKaraoke> {
+  return call<EstadoKaraoke>('karaoke_estado');
+}
+
+/** A la cola del karaoke: se preparan mientras suena el original. */
+export function karaokePreparar(pistas: number[]): Promise<void> {
+  return call<void>('karaoke_preparar', { pistas });
+}
+
+/** "Preparar mis favoritas": devuelve cuántas entraron en la cola. */
+export function karaokePrepararFavoritas(): Promise<number> {
+  return call<number>('karaoke_preparar_favoritas');
+}
+
+/** "Preparar una playlist": devuelve cuántas de sus pistas entraron en la cola. */
+export function karaokePrepararPlaylist(playlist: number): Promise<number> {
+  return call<number>('karaoke_preparar_playlist', { playlist });
+}
+
+/** El avance de lo que se prepara, y cuándo termina una pista. */
+export function alCambiarElKaraoke(cada: () => void): Promise<UnlistenFn> {
+  return escuchar<null>('karaoke:cambio', () => cada());
+}
+
+// --- Dispositivos -------------------------------------------------------------
+
+export function movilEstado(): Promise<EstadoMovil> {
+  return call<EstadoMovil>('movil_estado');
+}
+
+/** Si el cortafuegos del sistema deja pasar al teléfono y a la fiesta. No pide nada. */
+export function redPermisos(): Promise<PermisosRed> {
+  return call<PermisosRed>('red_permisos');
+}
+
+/** Pide al sistema que los deje pasar, con su ventana de administrador. */
+export function redPermitir(): Promise<PermisosRed> {
+  return call<PermisosRed>('red_permitir');
+}
+
+/** Deja que los teléfonos se conecten (o no), también en los próximos arranques. */
+export function movilPermitir(activo: boolean): Promise<EstadoMovil> {
+  return call<EstadoMovil>('movil_permitir', { activo });
+}
+
+/** Un QR y un código nuevos; enciende el servidor si hace falta. */
+export function movilEmparejar(): Promise<Emparejar> {
+  return call<Emparejar>('movil_emparejar');
+}
+
+export function movilTelefonos(): Promise<Telefono[]> {
+  return call<Telefono[]>('movil_telefonos');
+}
+
+export function movilQuitar(id: number): Promise<void> {
+  return call<void>('movil_quitar', { id });
+}
+
+/** Algo cambió en los teléfonos: uno se emparejó, se conectó o se fue. */
+export function alCambiarLosTelefonos(cada: () => void): Promise<UnlistenFn> {
+  return escuchar<null>('movil:cambio', () => cada());
+}
+
+// --- Importar y Por revisar ---------------------------------------------------
+
+export function importacionProgreso(): Promise<ProgresoImportacion> {
+  return call<ProgresoImportacion>('importacion_progreso');
+}
+
+/** El selector nativo de archivos (o de carpeta) y lo elegido a la cola. */
+/** Para la importación en curso después del archivo que se procesa. */
+export function cancelarImportacion(): Promise<void> {
+  return call<void>('importacion_cancelar');
+}
+
+export function anadirMusica(carpeta: boolean): Promise<number> {
+  return call<number>('anadir_musica', { carpeta });
+}
+
+export function alCambiarLaImportacion(
+  cada: (p: ProgresoImportacion) => void
+): Promise<UnlistenFn> {
+  return escuchar<ProgresoImportacion>('importacion:progreso', cada);
+}
+
+/** La biblioteca cambió por algo que no pidió la interfaz (lo completado en segundo plano). */
+export function alCambiarLaBiblioteca(cada: () => void): Promise<UnlistenFn> {
+  return escuchar<null>('biblioteca:cambio', () => cada());
+}
+
+/** Se arrastran archivos sobre la ventana (`true`) o se dejan de arrastrar. */
+export function alArrastrarArchivos(cada: (encima: boolean) => void): Promise<UnlistenFn> {
+  return escuchar<boolean>('importacion:arrastre', cada);
+}
+
+export function porRevisarListar(): Promise<Pendiente[]> {
+  return call<Pendiente[]>('por_revisar_listar');
+}
+
+export function porRevisarContar(): Promise<number> {
+  return call<number>('por_revisar_contar');
+}
+
+/** Tal como está (`candidato` nulo) o con el candidato elegido. */
+export function porRevisarImportar(id: number, candidato: number | null): Promise<number> {
+  return call<number>('por_revisar_importar', { id, candidato });
+}
+
+/** Señala el archivo de un pendiente en el gestor de archivos. */
+export function porRevisarMostrar(id: number): Promise<void> {
+  return call<void>('por_revisar_mostrar', { id });
+}
+
+export function porRevisarDescartar(ids: number[]): Promise<void> {
+  return call<void>('por_revisar_descartar', { ids });
+}
+
+export function porRevisarReintentar(id: number): Promise<void> {
+  return call<void>('por_revisar_reintentar', { id });
+}

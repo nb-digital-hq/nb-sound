@@ -1,0 +1,58 @@
+name: Feature request
+description: Propose a change in functionality, architecture or process
+labels: ["proposal"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals are discussed **before** they are implemented. Read the
+        [product philosophy](../blob/main/docs/design/product-philosophy.md) first: it lists what NB Sound
+        deliberately does not do, and why.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: >
+        Describe the user's problem, not the solution. If the problem cannot be described without naming the
+        solution, the solution is probably not justified yet.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other ways to solve it and why this one is better.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: level
+    attributes:
+      label: Estimated decision level
+      options:
+        - Operational (resolved in a pull request)
+        - Significant (proposal issue and pull request)
+        - Structural (requires an ADR)
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constitution
+    attributes:
+      label: Constitutional test
+      description: >
+        Every proposal must comply with the [Constitution](../blob/main/docs/architecture/constitution.md).
+      options:
+        - label: This proposal does not contradict any rule of the Constitution
+          required: true
+        - label: It introduces no telemetry, advertising or data transfer without explicit consent
+          required: true

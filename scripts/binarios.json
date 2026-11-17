@@ -1,0 +1,57 @@
+{
+  "$comentario": "Binarios que viajan dentro del instalador (ADR-006). Cada archivo con su SHA-256 fijado: si upstream lo cambia, la descarga se rechaza. ffmpeg no está (ADR-006). Ver scripts/fetch-binarios.mjs. macOS solo en Apple Silicon: ONNX Runtime 1.31 ya no publica binario para Mac con Intel. ONNX Runtime sale del paquete oficial de NuGet (Microsoft.ML.OnnxRuntime): el repositorio de GitHub dejó de servir sus releases, y la biblioteca de Linux del paquete es idéntica byte a byte a la del .tgz que se usaba.",
+  "linux-x86_64": [
+    {
+      "nombre": "fpcalc",
+      "url": "https://github.com/acoustid/chromaprint/releases/download/v1.6.2/chromaprint-fpcalc-1.6.2-linux-x86_64.tar.gz",
+      "sha256": "c968ad4a0821592a79b158fb2e1f46cbe0a22a0a1dbc0743c67d68e75d15d2bb",
+      "extraer": {
+        "chromaprint-fpcalc-1.6.2-linux-x86_64/fpcalc": "fpcalc"
+      }
+    },
+    {
+      "nombre": "onnxruntime",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.1/microsoft.ml.onnxruntime.1.31.1.nupkg",
+      "sha256": "6871ccbc97f3d5bdb4095a1dcec33aa78d56f6ed8de5980ef5fa1d9f2e7c679a",
+      "extraer": {
+        "runtimes/linux-x64/native/libonnxruntime.so": "libonnxruntime.so"
+      }
+    }
+  ],
+  "windows-x86_64": [
+    {
+      "nombre": "fpcalc",
+      "url": "https://github.com/acoustid/chromaprint/releases/download/v1.6.2/chromaprint-fpcalc-1.6.2-windows-x86_64.zip",
+      "sha256": "b74369726676670af3ab0eadff45f960cf969fdf4a87a971ba37eaf8d530e874",
+      "extraer": {
+        "chromaprint-fpcalc-1.6.2-windows-x86_64/fpcalc.exe": "fpcalc.exe"
+      }
+    },
+    {
+      "nombre": "onnxruntime",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.1/microsoft.ml.onnxruntime.1.31.1.nupkg",
+      "sha256": "6871ccbc97f3d5bdb4095a1dcec33aa78d56f6ed8de5980ef5fa1d9f2e7c679a",
+      "extraer": {
+        "runtimes/win-x64/native/onnxruntime.dll": "onnxruntime.dll"
+      }
+    }
+  ],
+  "macos-aarch64": [
+    {
+      "nombre": "fpcalc",
+      "url": "https://github.com/acoustid/chromaprint/releases/download/v1.6.2/chromaprint-fpcalc-1.6.2-macos-universal.tar.gz",
+      "sha256": "53d9368f96017fb288d74f6ed4d928f7bbbfb2ff81e69b4ef67b6ceeb217d9b2",
+      "extraer": {
+        "chromaprint-fpcalc-1.6.2-macos-universal/fpcalc": "fpcalc"
+      }
+    },
+    {
+      "nombre": "onnxruntime",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.31.1/microsoft.ml.onnxruntime.1.31.1.nupkg",
+      "sha256": "6871ccbc97f3d5bdb4095a1dcec33aa78d56f6ed8de5980ef5fa1d9f2e7c679a",
+      "extraer": {
+        "runtimes/osx-arm64/native/libonnxruntime.dylib": "libonnxruntime.dylib"
+      }
+    }
+  ]
+}

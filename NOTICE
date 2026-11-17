@@ -1,0 +1,37 @@
+NB Sound
+Copyright 2026 The NB Sound Authors
+
+This product includes software developed by The NB Sound Authors and by
+third parties. The complete list of third-party components, their copyright
+holders and their licenses is in THIRD-PARTY-NOTICES.md, which is distributed
+with the application; see docs/legal/third-party-notices.md.
+
+Portions of src-tauri/src/catalogo/texto.rs are a translation of
+difflib.SequenceMatcher from CPython, Copyright (c) 2001 Python Software
+Foundation, licensed under the Python Software Foundation License Version 2.
+Portions of src-tauri/src/rasgos.rs follow the beat tracker and spectral
+features of librosa, Copyright (c) 2013 librosa development team, licensed
+under the ISC License. The ten-band equalizer presets in
+src-tauri/src/audio/ecualizador.rs reproduce the preset values of VLC.
+
+This product includes, as separate executables, Chromaprint fpcalc
+(LGPL-2.1-or-later, https://github.com/acoustid/chromaprint) and ONNX Runtime
+(MIT, https://github.com/microsoft/onnxruntime).
+
+This product can download, on explicit user request, add-ons that are not part
+of this distribution and keep their own licenses:
+  - htdemucs (Meta), MIT License
+  - MusiCNN and its classification heads (Music Technology Group, Universitat
+    Pompeu Fabra), Creative Commons non-commercial license; non-commercial
+    use only
+  - all-MiniLM-L6-v2, Apache License 2.0
+  - ONNX Runtime with CUDA (MIT) and NVIDIA CUDA and cuDNN libraries (NVIDIA
+    license agreements)
+See docs/legal/model-licenses.md.
+
+Licensed under the Apache License, Version 2.0. You may obtain a copy of the
+License in the LICENSE file distributed with this work.
+
+"NB", "NB Digital" and "NB Sound" are trademarks of NB Digital. The Apache
+License does not grant permission to use the project's names, logos or
+trademarks. See TRADEMARKS.md for the trademark policy.

@@ -1,0 +1,74 @@
+name: Bug report
+description: Something does not work as it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a security vulnerability, **do not report it here**. Follow [SECURITY.md](../blob/main/SECURITY.md).
+        If the application sent data over the network without your consent, use the *Network leak report* template instead.
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What happens
+      description: Describe the observed behaviour, without interpreting it yet.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Numbered steps. A defect that cannot be reproduced cannot be fixed.
+      placeholder: |
+        1. Open the application with an empty library
+        2. Import the attached file
+        3. Observe that ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: NB Sound version
+      description: Shown in Settings, About.
+      placeholder: "1.0.0 or the commit hash"
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Distribution, desktop environment and display server.
+      placeholder: "Fedora 42, GNOME 48, Wayland / Windows 11 / macOS 26"
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        If the application starts, attach the latest log file from the `registros` folder inside its data directory.
+        It is redacted: it contains no paths, titles, artists or keys. Review it before attaching.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched for an existing issue about this
+          required: true
+        - label: This is not a security vulnerability
+          required: true
+        - label: I have not attached copyrighted material
+          required: true

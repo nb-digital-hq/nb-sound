@@ -1,0 +1,159 @@
+[package]
+name = "nb-sound"
+version = "1.0.0"
+description = "Aplicación de escritorio para la música local"
+authors = ["The NB Sound Authors"]
+license = "Apache-2.0"
+repository = "https://github.com/nb-digital-hq/nb-sound"
+edition = "2021"
+rust-version = "1.100"
+# Cuál es "la aplicación" si algún día hay más de un binario: `tauri dev` ejecuta
+# `cargo run` y cargo no elige solo. Es la contraparte de `mainBinaryName` en
+# `tauri.conf.json`; los dos los ata `tests/identidad_del_binario.rs`, como en
+# NB Books, donde separarlos metió una herramienta en el instalador en lugar de
+# la aplicación.
+default-run = "nb-sound"
+
+[lib]
+# El sufijo `_lib` evita el choque de nombres con el binario en Windows.
+name = "nb_sound_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# ADR-013: snapshot reproducible; el clon de Sound no necesita carpetas vecinas.
+nb-protocol = { version = "=0.1.0", path = "vendor/nb-shared/crates/nb-protocol" }
+nb-capability = { version = "=0.1.0", path = "vendor/nb-shared/crates/nb-capability", features = ["attachment"] }
+tauri = { version = "2", features = ["tray-icon"] }
+# El selector de archivos nativo, para "Añadir música" y elegir la carpeta de la
+# música (ADR-001). Se usa desde Rust: ninguna ruta
+# cruza el puente desde el webview. La misma versión que NB Books.
+tauri-plugin-dialog = "2.7.2"
+# Las actualizaciones de la aplicación (ADR-001 y ADR-009). Su cliente HTTP es propio, así que solo se usa desde `net.rs`, detrás
+# de la misma comprobación de consentimiento y anfitriones que el resto.
+tauri-plugin-updater = "2.14.1"
+# La firma del `.tar.gz` de Linux, que el plugin no sabe instalar (`net.rs`).
+# Es la misma versión que el plugin ya trae para comprobar lo que instala él.
+minisign-verify = "0.3.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2.5"
+ts-rs = "12.0.1"
+# SQLite embebido (sin depender del del sistema) y su pool, como NB Books
+# (ADR-004). La versión de rusqlite la marca r2d2_sqlite 0.35.
+rusqlite = { version = "0.40", features = ["bundled"] }
+r2d2 = "0.8.10"
+r2d2_sqlite = "0.35.0"
+# SHA-256: la cabecera `x-nb-sound-hash` del contrato móvil (ADR-005), la
+# verificación de los agregados (ADR-006) y las portadas por contenido. Ya llega
+# por `tauri-codegen` en la misma versión, y NB Books la usa igual.
+sha2 = "0.10.9"
+# El llavero del sistema para las claves de servicio (ADR-009), con la misma
+# versión y variante que NB Books: la feature `v1` elige Keychain, Credential
+# Locker o Secret Service según la plataforma, en Rust puro y sin libdbus.
+keyring = { version = "4.2.0", default-features = false, features = ["v1"] }
+# El motor de audio (ADR-003): Symphonia decodifica y Kira mezcla y saca el
+# sonido por cpal. Las mismas versiones y formatos que se midieron en su prototipo.
+kira = { version = "0.12.6", default-features = false, features = ["cpal"] }
+# Miniaturas y color dominante de las portadas, solo JPEG y PNG como NB Books
+# (ADR-001).
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
+# Sonoridad EBU R128 para normalizar el volumen (ADR-003).
+ebur128 = "0.1.11"
+symphonia = { version = "0.6.1", features = ["mp3", "aac", "alac", "flac", "vorbis", "pcm", "wav", "isomp4", "ogg"] }
+# Cliente HTTP síncrono con rustls: el mismo que NB Books. Solo `net.rs` lo usa
+# (lo vigila `scripts/check-network.mjs`).
+ureq = { version = "3.4.0", default-features = false, features = ["rustls", "platform-verifier"] }
+# El servidor de NB Sound Mobile (ADR-005): HTTPS y WebSocket con axum sobre
+# rustls, con la misma pila criptográfica (ring) que ya trae ureq, y el anuncio
+# mDNS. tokio y futures-util ya estaban en el árbol por Tauri y axum; aquí se
+# nombran porque el servidor los usa directamente.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "net", "time", "sync", "fs", "io-util", "macros"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
+mdns-sd = "0.21.6"
+# El certificado autofirmado del servidor móvil, la primera vez.
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# El QR del emparejamiento: solo la matriz de módulos; la interfaz la dibuja.
+qrcode = { version = "0.14.1", default-features = false }
+# La catalogación: la normalización de texto compara con NFKC/NFD y quita
+# diacríticos, y sus reglas son expresiones regulares. `regex` ya estaba en el
+# árbol por tracing-subscriber.
+unicode-normalization = "0.1.26"
+regex = "1.13.1"
+# Las etiquetas de todos los formatos que importa NB Sound (ADR-002).
+lofty = "0.25.5"
+# Los rasgos básicos del audio: FFT y
+# remuestreo, las mismas versiones que validó el prototipo de rasgos.
+rustfft = "6.4.1"
+rubato = "0.16.2"
+# Descartar desde Por revisar manda a la papelera del sistema, nunca borra del
+# todo (ADR-007 y ADR-002).
+trash = "5.2.9"
+# La carpeta de música vigilada (ADR-002).
+notify = "8.2.1"
+zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
+# `cuda` solo expone el proveedor de CUDA en la API: no descarga ni enlaza nada.
+# Lo usa el agregado de aceleración en Linux con NVIDIA.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic", "cuda"] }
+flacenc = { version = "0.5", default-features = false }
+
+# Controles del sistema (ADR-003): MPRIS en Linux, con aleatorio y
+# repetición en los dos sentidos; SMTC en Windows y el centro de reproducción en
+# macOS.
+[target.'cfg(target_os = "linux")'.dependencies]
+mpris-server = "0.11.0"
+
+# Bajar la prioridad de los hilos de fondo (karaoke, análisis, sonoridad), para que
+# nunca compitan con la interfaz ni con el audio (ADR-002).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+# En Windows, lo mismo con el modo de fondo de Win32, que baja a la vez la
+# prioridad del procesador y la del disco (ADR-002).
+# Ya llegaba por Tauri en esta versión; aquí solo se pide su API de hilos.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_Threading", "Win32_Storage_FileSystem"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+souvlaki = "0.9.3"
+
+[dev-dependencies]
+# ADR-017: contrato SecretStore en fixtures; ya resuelto por el llavero. MIT/Apache-2.0.
+zeroize = "=1.9.1"
+# ADR-016: base64 ya resuelto por la pila; solo el productor editorial. MIT/Apache-2.0.
+base64 = "=0.22.1"
+# Solo en las pruebas: las doradas se comparan bit a bit, y el lector por
+# defecto puede errar en la última cifra de un `f64`.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tauri = { version = "2", features = ["test"] }
+# El cliente del arnés de respuestas doradas (tests/contrato_movil.rs): habla
+# WebSocket sobre TLS con el servidor como lo haría el teléfono.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+split-debuginfo = "unpacked"
+
+# Las dependencias se optimizan también en desarrollo: el motor de audio y los
+# decodificadores sin optimizar no llegan a tiempo real.
+[profile.dev.package."*"]
+opt-level = 2
+
+# ADR-016: herramienta editorial; no añade un binario al instalador ni al puente.
+[[example]]
+name = "publicar_catalogo"
+path = "tools/publicar_catalogo.rs"
+test = true

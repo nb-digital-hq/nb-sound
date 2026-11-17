@@ -1,0 +1,158 @@
+name: CI
+
+# Ningún cambio entra en main sin pasar por aquí. Linux lo ejecuta todo; Windows
+# y macOS compilan, pasan los lints y compilan las pruebas sin ejecutarlas, porque
+# nadie las ha comprobado en un equipo real. Ver docs/developer/ci-cd.md
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  procedencia:
+    name: Procedencia y convenciones
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Declaracion de origen y convencion de commits
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          patron='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore)(\([a-z0-9._/-]+\))?!?: .+'
+          fallo=0
+          for c in $(git rev-list "$BASE".."$HEAD"); do
+            asunto=$(git log -1 --format=%s "$c")
+            case "$asunto" in "Merge "*|"Revert "*) continue ;; esac
+            echo "$asunto" | grep -qE "$patron" || { echo "::error::Asunto fuera de convencion en $c"; fallo=1; }
+            git log -1 --format=%B "$c" | grep -qiE '^Signed-off-by: .+ <.+@.+>' \
+              || { echo "::error::El commit $c no lleva Signed-off-by"; fallo=1; }
+          done
+          exit $fallo
+
+  workflows:
+    name: Contratos de workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Actionlint fijado y verificado
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz -o "$RUNNER_TEMP/actionlint.tar.gz"
+          printf '%s  %s\n' 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 "$RUNNER_TEMP/actionlint.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+
+  verify:
+    name: pnpm verify
+    # La misma base Linux que produce los paquetes: lo que se verifica es lo que
+    # se publica.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-nb-sound
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      # El runtime incrusta la interfaz compilada y empaqueta fpcalc y ONNX
+      # Runtime como recursos: sin los dos, el script de compilación de Tauri se
+      # detiene antes de compilar nada.
+      - run: pnpm build
+      - run: pnpm binarios
+      - run: pnpm verify
+
+  runtime:
+    name: Runtime (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencias del sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libasound2-dev
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v1-nb-sound
+          workspaces: src-tauri
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Binarios del instalador
+        run: node scripts/fetch-binarios.mjs
+      - name: Formato
+        working-directory: src-tauri
+        run: cargo fmt --all -- --check
+      - name: Lints
+        working-directory: src-tauri
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Pruebas
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        run: cargo test --all-features
+      # Windows y macOS no se verifican en un equipo real: aquí se comprueba que
+      # todo compila y pasa los lints, pruebas incluidas, sin ejecutarlas.
+      - name: Las pruebas compilan
+        if: runner.os != 'Linux'
+        working-directory: src-tauri
+        run: cargo test --all-features --no-run
+      - name: Los tipos generados estan al dia
+        if: runner.os == 'Linux'
+        run: |
+          if ! git diff --exit-code -- src/lib/bindings; then
+            echo "::error::Los tipos del puente cambiaron sin regenerarse. Ejecuta: cd src-tauri && cargo test"
+            exit 1
+          fi
+
+  suministro:
+    name: Dependencias y licencias
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: src-tauri/Cargo.toml
+          command: check advisories licenses bans sources
+          arguments: --all-features

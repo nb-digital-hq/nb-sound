@@ -1,0 +1,323 @@
+/**
+ * La parte del puente que solo usan pantallas que se cargan aparte del arranque:
+ * agregados, copia de seguridad, edición, privacidad e IA. Vive aquí, y no en
+ * `index.ts`, porque `index.ts` entra entero en el arranque (`check-paquete`); este
+ * módulo solo lo importan módulos diferidos y se carga con ellos.
+ */
+
+import type { UnlistenFn } from '@tauri-apps/api/event';
+import type {
+  Actualizacion,
+  AjustesIa,
+  CambioFrecuenciaCopia,
+  ClavesServicios,
+  DatosAlbum,
+  DatosPista,
+  Descubrimiento,
+  EstadoAgregado,
+  EstadoCopia,
+  EstadoFiesta,
+  EstructuraCarpetas,
+  FrecuenciaCopia,
+  Gpu,
+  IdAgregado,
+  OpcionesCopiaDispositivo,
+  OrdenInteligente,
+  OrigenCopia,
+  PoliticaDeRed,
+  ProveedorIa,
+  RadarAnimos,
+  ReglaInteligente,
+  ResumenCopia,
+  ResumenCopiaDispositivo,
+  ResumenDuplicados,
+  ResumenEscucha,
+  RevisionCarpeta,
+  RevisionCopia,
+  ServicioConClave,
+  SugerenciaFiesta
+} from '#lib/bindings/index.ts';
+
+import { call, escuchar } from './index';
+
+export type {
+  EstadoFiesta,
+  EstructuraCarpetas,
+  FrecuenciaCopia,
+  OpcionesCopiaDispositivo,
+  OrdenInteligente,
+  OrigenCopia,
+  RadarAnimos,
+  ReglaInteligente,
+  ResumenCopiaDispositivo,
+  ResumenDuplicados,
+  ResumenEscucha,
+  RevisionCarpeta,
+  SugerenciaFiesta
+};
+
+// --- Modo fiesta ----------------------------------------------------------
+
+export function fiestaEstado(): Promise<EstadoFiesta> {
+  return call<EstadoFiesta>('fiesta_estado');
+}
+
+export function fiestaEncender(activo: boolean): Promise<EstadoFiesta> {
+  return call<EstadoFiesta>('fiesta_encender', { activo });
+}
+
+export function fiestaRegenerarQr(): Promise<EstadoFiesta> {
+  return call<EstadoFiesta>('fiesta_regenerar_qr');
+}
+
+export function fiestaModoAutomatico(activo: boolean): Promise<EstadoFiesta> {
+  return call<EstadoFiesta>('fiesta_modo_automatico', { activo });
+}
+
+export function fiestaResolverSugerencia(
+  id: number,
+  aceptar: boolean,
+  bloquear: boolean
+): Promise<EstadoFiesta> {
+  return call<EstadoFiesta>('fiesta_resolver_sugerencia', { id, aceptar, bloquear });
+}
+
+export function alCambiarFiesta(cada: () => void): Promise<UnlistenFn> {
+  return escuchar<null>('fiesta:cambio', () => cada());
+}
+
+// --- Copia a dispositivos externos ----------------------------------------
+
+export function copiaDispositivoEjecutar(
+  opciones: OpcionesCopiaDispositivo
+): Promise<ResumenCopiaDispositivo | null> {
+  return call<ResumenCopiaDispositivo | null>('copia_dispositivo_ejecutar', { opciones });
+}
+
+/** Entrada aislada del arnés; el runtime la rechaza fuera de NB_SOUND_TEST_DIR. */
+export function qaImportarCarpeta(ruta: string): Promise<number> {
+  return call<number>('qa_importar_carpeta', { ruta });
+}
+
+// --- Resumen local de escucha ---------------------------------------------
+
+export function resumenEscucha(periodo: string | null = null): Promise<ResumenEscucha> {
+  return call<ResumenEscucha>('resumen_escucha', { periodo });
+}
+
+export function exportarResumenEscucha(periodo: string | null = null): Promise<boolean> {
+  return call<boolean>('exportar_resumen_escucha', { periodo });
+}
+
+// --- Listas inteligentes y automáticas ------------------------------------
+
+export function crearPlaylistInteligente(
+  nombre: string,
+  descripcion: string | null,
+  regla: ReglaInteligente
+): Promise<number> {
+  return call<number>('crear_playlist_inteligente', { nombre, descripcion, regla });
+}
+
+export function editarPlaylistInteligente(
+  id: number,
+  nombre: string,
+  descripcion: string | null,
+  regla: ReglaInteligente
+): Promise<void> {
+  return call<void>('editar_playlist_inteligente', { id, nombre, descripcion, regla });
+}
+
+export function regenerarPlaylistsAutomaticas(): Promise<number> {
+  return call<number>('regenerar_playlists_automaticas');
+}
+
+// --- Descubrir --------------------------------------------------------------------
+
+/** Lo que se pide en palabras: secciones de pistas, o `entendida: false`. */
+export function descubrir(consulta: string, limite: number): Promise<Descubrimiento> {
+  return call<Descubrimiento>('descubrir', { consulta, limite });
+}
+
+// --- Agregados -------------------------------------------------------------------
+
+/** La GPU que aprovecharía el agregado de aceleración, o `null`. */
+export function gpuDetectada(): Promise<Gpu | null> {
+  return call<Gpu | null>('gpu_detectada');
+}
+
+export function agregadosEstado(): Promise<EstadoAgregado[]> {
+  return call<EstadoAgregado[]>('agregados_estado');
+}
+
+// --- Actualizaciones de la aplicación ------------------------------------------------
+
+/** La versión publicada más nueva que la instalada; buscarla es consentir el servicio. */
+export function actualizacionBuscar(): Promise<Actualizacion | null> {
+  return call<Actualizacion | null>('actualizacion_buscar');
+}
+
+/** Instala la versión más nueva; la aplicación se reinicia con ella. */
+export function actualizacionInstalar(): Promise<void> {
+  return call<void>('actualizacion_instalar');
+}
+
+/** Empieza a instalarlo en segundo plano; el progreso llega con `alCambiarLosAgregados`. */
+export function agregadoInstalar(id: IdAgregado): Promise<void> {
+  return call<void>('agregado_instalar', { id });
+}
+
+export function agregadoQuitar(id: IdAgregado): Promise<EstadoAgregado[]> {
+  return call<EstadoAgregado[]>('agregado_quitar', { id });
+}
+
+/** Cada avance de una instalación, su fin o su fallo: se vuelve a pedir el estado. */
+export function alCambiarLosAgregados(cada: () => void): Promise<UnlistenFn> {
+  return escuchar<null>('agregados:cambio', () => cada());
+}
+
+// --- Copia de seguridad ----------------------------------------------------------
+
+export function copiaEstado(): Promise<EstadoCopia> {
+  return call<EstadoCopia>('copia_estado');
+}
+
+/** Abre el selector nativo para guardar; `null` si se canceló. */
+export function copiaCrear(): Promise<ResumenCopia | null> {
+  return call<ResumenCopia | null>('copia_crear');
+}
+
+/** Abre el selector nativo, valida la copia y la deja lista para el próximo arranque. */
+export function copiaRestaurar(): Promise<boolean> {
+  return call<boolean>('copia_restaurar');
+}
+
+/** 0, 1, 7 o 30 días. */
+export function copiaFrecuencia(
+  dias: number,
+  revision: RevisionCopia
+): Promise<CambioFrecuenciaCopia> {
+  return call<CambioFrecuenciaCopia>('copia_frecuencia', { dias, revision });
+}
+
+export function copiaFrecuenciaEstado(): Promise<FrecuenciaCopia> {
+  return call<FrecuenciaCopia>('copia_frecuencia_estado');
+}
+
+export function alCambiarLaFrecuencia(
+  cada: (estado: FrecuenciaCopia | null) => void
+): Promise<UnlistenFn> {
+  return escuchar<FrecuenciaCopia | null>('copia:frecuencia', cada);
+}
+
+// --- La carpeta de tu música -----------------------------------------------------
+
+/**
+ * Elige otra carpeta de música con el selector nativo y dice cuántas canciones de
+ * la biblioteca ya están en ella. No cambia nada hasta `aplicarCarpetaMusica`;
+ * `null` si se cancela.
+ */
+export function elegirCarpetaMusica(): Promise<RevisionCarpeta | null> {
+  return call<RevisionCarpeta | null>('carpeta_musica_elegir');
+}
+
+/** Usa la carpeta elegida; con `mover`, lleva allí la música. Devuelve cuántos archivos movió. */
+export function aplicarCarpetaMusica(mover: boolean): Promise<number> {
+  return call<number>('carpeta_musica_aplicar', { mover });
+}
+
+/** El avance de mover la música: `[hechas, total]`. */
+export function alMoverLaMusica(cada: (avance: [number, number]) => void): Promise<UnlistenFn> {
+  return escuchar<[number, number]>('carpeta:avance', cada);
+}
+
+export function copiaElegirCarpeta(): Promise<EstadoCopia> {
+  return call<EstadoCopia>('copia_elegir_carpeta');
+}
+
+/** Reinicia la aplicación, con el mismo cierre ordenado que al salir. */
+export function reiniciar(): Promise<void> {
+  return call<void>('reiniciar');
+}
+
+// --- Editar metadatos --------------------------------------------------------------
+
+export function datosPista(pista: number): Promise<DatosPista> {
+  return call<DatosPista>('datos_pista', { pista });
+}
+
+/** Guarda en la base y, si se puede, en el archivo. La pista conserva su id. */
+export function editarPista(pista: number, datos: DatosPista): Promise<void> {
+  return call<void>('editar_pista', { pista, datos });
+}
+
+export function datosAlbum(album: number): Promise<DatosAlbum> {
+  return call<DatosAlbum>('datos_album', { album });
+}
+
+/** Devuelve el id del álbum resultante: otro solo si se juntó con uno que ya existía. */
+export function editarAlbum(album: number, datos: DatosAlbum): Promise<number> {
+  return call<number>('editar_album', { album, datos });
+}
+
+// --- Privacidad e inteligencia artificial ---------------------------------------
+
+/** Lo que la puerta de red deja salir ahora mismo. */
+export function politicaRed(): Promise<PoliticaDeRed> {
+  return call<PoliticaDeRed>('politica_red');
+}
+
+export function cambiarPoliticaRed(politica: PoliticaDeRed): Promise<void> {
+  return call<void>('cambiar_politica_red', { politica });
+}
+
+export function ajustesIa(): Promise<AjustesIa> {
+  return call<AjustesIa>('ajustes_ia');
+}
+
+/** Un modelo vacío vuelve al de fábrica del proveedor. */
+export function guardarAjustesIa(proveedor: ProveedorIa, modelo: string): Promise<AjustesIa> {
+  return call<AjustesIa>('guardar_ajustes_ia', { proveedor, modelo });
+}
+
+/** La clave va al llavero del sistema y no vuelve: la respuesta solo dice si hay una. */
+export function guardarClaveIa(clave: string): Promise<AjustesIa> {
+  return call<AjustesIa>('guardar_clave_ia', { clave });
+}
+
+export function borrarClaveIa(): Promise<AjustesIa> {
+  return call<AjustesIa>('borrar_clave_ia');
+}
+
+export type { ClavesServicios, ServicioConClave };
+
+/** Qué claves de servicio hay en el llavero; las claves no cruzan el puente de vuelta. */
+export function clavesServicios(): Promise<ClavesServicios> {
+  return call<ClavesServicios>('claves_servicios');
+}
+
+export function guardarClaveServicio(
+  servicio: ServicioConClave,
+  clave: string
+): Promise<ClavesServicios> {
+  return call<ClavesServicios>('guardar_clave_servicio', { servicio, clave });
+}
+
+export function borrarClaveServicio(servicio: ServicioConClave): Promise<ClavesServicios> {
+  return call<ClavesServicios>('borrar_clave_servicio', { servicio });
+}
+
+// --- Duplicados ------------------------------------------------
+
+export function duplicadosResumen(): Promise<ResumenDuplicados> {
+  return call<ResumenDuplicados>('duplicados_resumen');
+}
+
+/** El barrido de duplicados sobre la biblioteca: aparta las copias y dice cuántas. */
+export function buscarDuplicados(): Promise<number> {
+  return call<number>('buscar_duplicados');
+}
+
+export function purgarDuplicados(borrarArchivos: boolean): Promise<number> {
+  return call<number>('purgar_duplicados', { borrarArchivos });
+}

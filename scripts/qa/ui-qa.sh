@@ -1,0 +1,853 @@
+#!/usr/bin/env bash
+# Pruebas finales de interfaz sobre KWin virtual, una copia de los datos y el
+# inspector remoto de WebKit. No hay interacción de una persona ni audio físico.
+
+set -euo pipefail
+
+RAIZ=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+QA_BASE=${NB_QA_ROOT:-"$HOME/.cache/nb-sound-qa/pruebas-finales"}
+DB="$QA_BASE/datos/nb-sound.sqlite"
+BINARIO=${NB_QA_BINARIO_UI:-"$RAIZ/src-tauri/target/release/nb-sound"}
+RUNTIME="$QA_BASE/ui-runtime"
+WAYLAND_SOCKET="$RUNTIME/wayland-nbqa-ui"
+SUMIDERO=nb_sound_qa_ui
+MODULO_SUMIDERO=
+MODULO_RESTORE=
+PID_KWIN=
+PID_APP=
+PID_CAPTURA=
+LISTA_DISPLAY=
+X_ANTES=
+
+if [[ ${NB_QA_EN_SCOPE:-0} != 1 ]]; then
+  exec systemd-run --user --scope -p MemoryMax=6G -- \
+    env NB_QA_EN_SCOPE=1 "$0" "$@"
+fi
+
+uso() {
+  printf '%s\n' \
+    'Uso: scripts/qa/ui-qa.sh preparar|iniciar|inicio|temas|biblioteca|movil|catalogacion|agregados|experiencias|funciones|mashups|catalog-probe|catalog-red|fallo-apariencia|fallo-js|detener|todo'
+}
+
+limpiar() {
+  # Ningún parec de una corrida anterior puede seguir escribiendo en la copia.
+  pkill -f "parec .*nb-sound-qa" 2>/dev/null || true
+  if [[ -n ${PID_CAPTURA:-} ]] && kill -0 "$PID_CAPTURA" 2>/dev/null; then
+    kill -TERM "$PID_CAPTURA" 2>/dev/null || true
+    wait "$PID_CAPTURA" 2>/dev/null || true
+  fi
+  if [[ -n ${PID_APP:-} ]] && kill -0 "$PID_APP" 2>/dev/null; then
+    kill -TERM "$PID_APP" 2>/dev/null || true
+    wait "$PID_APP" 2>/dev/null || true
+  fi
+  if [[ -n ${PID_KWIN:-} ]] && kill -0 "$PID_KWIN" 2>/dev/null; then
+    kill -TERM "$PID_KWIN" 2>/dev/null || true
+    wait "$PID_KWIN" 2>/dev/null || true
+  fi
+  if [[ -n ${MODULO_SUMIDERO:-} ]]; then
+    pactl unload-module "$MODULO_SUMIDERO" >/dev/null 2>&1 || true
+  fi
+  if [[ -n ${MODULO_RESTORE:-} ]]; then
+    pactl load-module module-stream-restore >/dev/null 2>&1 || true
+  fi
+  find "$HOME/.local/share/Trash/files" -maxdepth 1 -name 'nbqa-*' -delete 2>/dev/null || true
+  find "$HOME/.local/share/Trash/info" -maxdepth 1 -name 'nbqa-*.trashinfo' -delete 2>/dev/null || true
+  # La canción sintética de la papelera se guarda con el nombre de su título.
+  find "$HOME/.local/share/Trash/files" -maxdepth 1 -name '00_qa_papelera.mp3*' -delete 2>/dev/null || true
+  find "$HOME/.local/share/Trash/info" -maxdepth 1 -name '00_qa_papelera.mp3*.trashinfo' -delete 2>/dev/null || true
+}
+trap limpiar EXIT INT TERM
+
+preparar() {
+  NB_QA_EN_SCOPE=1 "$RAIZ/scripts/qa/audio-qa.sh" preparar
+  # La ruta recordada es del webview, no de la base: sin esto una corrida
+  # empieza donde terminó la anterior y deja de probar Inicio.
+  rm -f "$QA_BASE/xdg-data/org.nbsound.desktop/localstorage/tauri_localhost_0.localstorage"*
+  sqlite3 "$DB" <<'SQL'
+UPDATE preferencias SET valor = 'false'
+ WHERE clave IN ('analisis_activado', 'analisis_en_segundo_plano',
+                 'analizar_al_importar', 'servidor_movil_al_arrancar');
+UPDATE preferencias SET valor = '"negro_puro"' WHERE clave = 'tema';
+UPDATE preferencias SET valor = '"Inter"' WHERE clave = 'tipografia';
+UPDATE preferencias SET valor = '100' WHERE clave = 'escala';
+UPDATE preferencias SET valor = '"Ana"' WHERE clave = 'nombre_usuario';
+UPDATE estado_reproductor SET volumen = 1, normalizar = 0, aleatorio = 0,
+  repeticion = 'ninguno', posicion_seg = 0 WHERE id = 1;
+DELETE FROM playlists WHERE nombre LIKE 'QA IA%';
+SQL
+  printf 'Copia de interfaz preparada en %s\n' "$QA_BASE"
+}
+
+preparar_sonoridad() {
+  sqlite3 "$DB" <<'SQL'
+DELETE FROM sonoridad WHERE pista_id IN (
+  SELECT id FROM pistas WHERE estado = 'biblioteca' AND ruta LIKE '%.mp3'
+  ORDER BY id LIMIT 100
+);
+UPDATE estado_reproductor SET normalizar = 0, volumen = 1, aleatorio = 0,
+  repeticion = 'ninguno', posicion_seg = 0 WHERE id = 1;
+SQL
+}
+
+preparar_fallo_apariencia() {
+  preparar
+  # La versión de esquema queda al día, pero la lectura de preferencias falla.
+  sqlite3 "$DB" 'DROP TABLE preferencias;'
+}
+
+preparar_catalogacion_red() {
+  preparar
+  local fuente="$QA_BASE/catalogacion/fuentes/red-real"
+  local original="$HOME/Música/biblioteca/john_lennon/albumes/walls_and_bridges/00_9_dream.mp3"
+  rm -rf "$fuente"
+  mkdir -p "$fuente"
+  ffmpeg -hide_banner -loglevel error -y -i "$original" -map 0:a -c copy \
+    -map_metadata -1 -id3v2_version 3 "$fuente/QA AcoustID.mp3"
+  sqlite3 "$DB" <<'SQL'
+UPDATE preferencias SET valor = '{"general":true,"servicios":["acoustId","musicBrainz","coverArtArchive","lrclib"]}'
+ WHERE clave = 'politica_de_red';
+UPDATE preferencias SET valor = 'true' WHERE clave = 'organizar_archivos';
+SQL
+}
+
+limpiar_restos_de_importacion() {
+  # La base se copia de nuevo en cada corrida, pero la carpeta de música no: lo
+  # que importaron corridas anteriores sigue ahí y el vigilante lo trataría como
+  # música nueva. Lo de la biblioteca real son enlaces duros (dos o más enlaces);
+  # lo que tiene uno solo lo creó una corrida y se puede borrar sin tocar nada real.
+  find "$QA_BASE/biblioteca" -type f -links 1 -delete
+  find "$QA_BASE/biblioteca" -mindepth 1 -type d -empty -delete
+  rm -rf "$QA_BASE/datos/por-revisar"
+  mkdir -p "$QA_BASE/datos/por-revisar"
+}
+
+preparar_catalogacion() {
+  preparar
+  limpiar_restos_de_importacion
+  local base="$QA_BASE/catalogacion"
+  local fuentes="$base/fuentes"
+  local original="$HOME/Música/biblioteca/john_lennon/albumes/walls_and_bridges/00_9_dream.mp3"
+  rm -rf "$base"
+  mkdir -p "$fuentes/red-real" "$fuentes/sin-red" "$fuentes/completar" \
+    "$fuentes/revisar" "$fuentes/lote"
+  ffmpeg -hide_banner -loglevel error -y -i "$original" -map 0:a -c copy \
+    -map_metadata -1 -id3v2_version 3 "$fuentes/red-real/QA AcoustID.mp3"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i 'sine=frequency=523:sample_rate=48000:duration=16' \
+    -metadata title='QA Sin Red' -metadata artist='QA Catalogacion' \
+    -metadata album='QA Sin Red' -id3v2_version 3 "$fuentes/sin-red/nbqa-sin-red.mp3"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i 'color=c=0x336699:s=300x300' -frames:v 1 \
+    "$base/portada-qa.jpg"
+  ffmpeg -hide_banner -loglevel error -y -i "$original" -map 0:a -c copy \
+    -metadata title='QA Completar' -metadata artist='QA Artista' \
+    -metadata album='QA Completar Álbum' -id3v2_version 3 \
+    "$fuentes/completar/nbqa-completar.mp3"
+  rm -rf "$fuentes/lote"
+  preparar_lote_qa
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=16' \
+    -metadata title='QA Tal Cual' -metadata artist='QA Catalogacion' \
+    -id3v2_version 3 "$fuentes/revisar/nbqa-tal-cual.mp3"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i 'sine=frequency=480:sample_rate=48000:duration=16' \
+    -metadata title='QA Reintentar' -id3v2_version 3 \
+    "$fuentes/revisar/nbqa-reintentar.mp3"
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i 'sine=frequency=520:sample_rate=48000:duration=16' \
+    -metadata title='QA Descartar' -id3v2_version 3 \
+    "$fuentes/revisar/nbqa-descartar.mp3"
+  cp "$fuentes/revisar/nbqa-tal-cual.mp3" "$fuentes/revisar/nbqa-sin-confirmar.mp3"
+  cp "$fuentes/revisar/nbqa-tal-cual.mp3" "$fuentes/revisar/nbqa-fallida.mp3"
+  cp "$fuentes/revisar/nbqa-tal-cual.mp3" "$fuentes/revisar/nbqa-danada.mp3"
+  cp "$fuentes/revisar/nbqa-tal-cual.mp3" "$fuentes/revisar/nbqa-duplicado.mp3"
+  sqlite3 "$DB" <<'SQL'
+UPDATE preferencias SET valor = '{"general":true,"servicios":["acoustId","musicBrainz","coverArtArchive","lrclib"]}'
+ WHERE clave = 'politica_de_red';
+SQL
+  rm -f "$QA_BASE/registros"/nb-sound.log.*
+}
+
+preparar_lote_qa() {
+  local lote="$QA_BASE/catalogacion/fuentes/lote"
+  local i titulo
+  rm -rf "$lote"
+  mkdir -p "$lote"
+  for i in $(seq 1 120); do
+    titulo=$(printf 'QA Lote %02d' "$i")
+    ffmpeg -hide_banner -loglevel error -y \
+      -f lavfi -i "sine=frequency=$((330 + i * 17)):sample_rate=48000:duration=16" \
+      -metadata title="$titulo" -metadata artist='QA Catalogacion' \
+      -metadata album='QA Lote' -id3v2_version 3 \
+      "$lote/nbqa-lote-$i.mp3"
+  done
+}
+
+limpiar_lote_qa() {
+  rm -rf "$QA_BASE/biblioteca/qa_fase_4/albumes/qa_lote"
+  sqlite3 "$DB" <<'SQL'
+DELETE FROM pendientes_importacion
+ WHERE ruta LIKE '%/catalogacion/fuentes/lote/%'
+    OR ruta LIKE '%/qa_lote/%';
+UPDATE importaciones SET estado = 'cancelada',
+    terminada_en = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+ WHERE estado = 'en_curso'
+   AND NOT EXISTS (
+     SELECT 1 FROM pendientes_importacion p WHERE p.importacion_id = importaciones.id
+   );
+DELETE FROM por_revisar
+ WHERE json_extract(metadatos, '$.nombre_original') LIKE '%qa_lote_%'
+    OR json_extract(metadatos, '$.nombre_original') LIKE 'nbqa-lote-%'
+    OR ruta LIKE '%/nbqa-lote-%';
+DELETE FROM pistas WHERE titulo LIKE 'QA Lote %';
+DELETE FROM albumes
+ WHERE titulo = 'QA Lote'
+   AND NOT EXISTS (SELECT 1 FROM pistas p WHERE p.album_id = albumes.id);
+DELETE FROM artistas
+ WHERE nombre = 'QA Catalogacion'
+   AND NOT EXISTS (SELECT 1 FROM pistas p WHERE p.artista_id = artistas.id)
+   AND NOT EXISTS (SELECT 1 FROM albumes a WHERE a.artista_id = artistas.id);
+SQL
+}
+
+iniciar_sumidero() {
+  MODULO_RESTORE=$(pactl list short modules |
+    awk '$2 == "module-stream-restore" { print $1 }')
+  if [[ -n $MODULO_RESTORE ]]; then
+    pactl unload-module "$MODULO_RESTORE"
+  fi
+  MODULO_SUMIDERO=$(pactl load-module module-null-sink \
+    sink_name="$SUMIDERO" rate=48000 format=float32le channels=2)
+  NODO_SUMIDERO=$(pw-cli ls Node | awk '
+    /^[[:space:]]*id [0-9]+,/ { nodo = $2; sub(/,/, "", nodo) }
+    /node.name = "nb_sound_qa_ui"/ { print nodo }
+  ')
+  export NODO_SUMIDERO
+}
+
+iniciar_kwin() {
+  mkdir -p "$RUNTIME"
+  chmod 700 "$RUNTIME"
+  X_ANTES=$(find /tmp/.X11-unix -maxdepth 1 -type s -name 'X*' -printf '%f\n' |
+    sort | tr '\n' ' ')
+  env XDG_RUNTIME_DIR="$RUNTIME" kwin_wayland \
+    --socket wayland-nbqa-ui --virtual --width 1280 --height 800 \
+    --xwayland --no-lockscreen --no-global-shortcuts \
+    >"$QA_BASE/registros/kwin-qa.log" 2>&1 &
+  PID_KWIN=$!
+  local i
+  for i in $(seq 1 100); do
+    if [[ -S $WAYLAND_SOCKET ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ ! -S $WAYLAND_SOCKET ]]; then
+    printf 'KWin virtual no creó el socket Wayland\n' >&2
+    tail -n 80 "$QA_BASE/registros/kwin-qa.log" >&2 || true
+    return 1
+  fi
+  for i in $(seq 1 100); do
+    local nuevos nuevo
+    nuevos=$(find /tmp/.X11-unix -maxdepth 1 -type s -name 'X*' -printf '%f\n' |
+      sort)
+    for nuevo in $nuevos; do
+      if [[ " $X_ANTES " != *" $nuevo "* ]]; then
+        LISTA_DISPLAY=":${nuevo#X}"
+        break
+      fi
+    done
+    if [[ -n $LISTA_DISPLAY ]]; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ -z $LISTA_DISPLAY ]]; then
+    printf 'KWin virtual no arrancó Xwayland\n' >&2
+    return 1
+  fi
+  export LISTA_DISPLAY
+}
+
+preparar_papelera_qa() {
+  local papelera_qa="$QA_BASE/xdg-data/Trash"
+  if [[ -L $papelera_qa ]]; then
+    return 0
+  fi
+  if [[ -d $papelera_qa ]]; then
+    find "$papelera_qa/files" -maxdepth 1 -name 'nbqa-*' -delete 2>/dev/null || true
+    find "$papelera_qa/info" -maxdepth 1 -name 'nbqa-*.trashinfo' -delete 2>/dev/null || true
+    rmdir "$papelera_qa/files" "$papelera_qa/info" "$papelera_qa"
+  fi
+  ln -s "$HOME/.local/share/Trash" "$papelera_qa"
+}
+
+esperar_inspector() {
+  local i
+  for i in $(seq 1 120); do
+    if curl -fsS http://127.0.0.1:9333/ 2>/dev/null | rg -q 'socket/'; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  printf 'El inspector de WebKit no apareció\n' >&2
+  return 1
+}
+
+lanzar_app() {
+  local registro="$QA_BASE/registros/app-ui.log"
+  : >"$registro"
+  env \
+    WAYLAND_DISPLAY="$WAYLAND_SOCKET" \
+    DISPLAY="$LISTA_DISPLAY" \
+    GDK_BACKEND=x11 \
+    NB_SOUND_TEST_DIR="$QA_BASE" \
+    NB_QA_PERMITIR_IMPORTACION=1 \
+    PULSE_SINK="$SUMIDERO" \
+    PIPEWIRE_NODE="$NODO_SUMIDERO" \
+    WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9333 \
+    XDG_DATA_HOME="$QA_BASE/xdg-data" \
+    XDG_CACHE_HOME="$QA_BASE/xdg-cache" \
+    XDG_CONFIG_HOME="$QA_BASE/xdg-config" \
+    RUST_LOG="${NB_QA_RUST_LOG:-warn}" \
+    NB_SOUND_LOG="${NB_QA_NB_SOUND_LOG:-info}" \
+    "$BINARIO" >"$registro" 2>&1 &
+  PID_APP=$!
+  export PID_APP
+}
+
+arrancar_app() {
+  lanzar_app
+  esperar_inspector
+}
+
+iniciar_entorno() {
+  iniciar_sumidero
+  iniciar_kwin
+  preparar_papelera_qa
+  arrancar_app
+}
+
+cerrar_app() {
+  if [[ -n ${PID_APP:-} ]] && kill -0 "$PID_APP" 2>/dev/null; then
+    kill -TERM "$PID_APP" 2>/dev/null || true
+    wait "$PID_APP" 2>/dev/null || true
+  fi
+  PID_APP=
+}
+
+capturar_primer_fotograma() {
+  local carpeta="$QA_BASE/capturas/arranque"
+  mkdir -p "$carpeta"
+  find "$carpeta" -maxdepth 1 -type f -name '*.png' -delete
+  (
+    for _ in $(seq 1 600); do
+      ventana=$(DISPLAY="$LISTA_DISPLAY" xdotool search --onlyvisible --name '^NB Sound$' 2>/dev/null |
+        head -n 1 || true)
+      if [[ -n $ventana ]]; then
+        for marco in $(seq -w 1 12); do
+          DISPLAY="$LISTA_DISPLAY" import -window "$ventana" "$carpeta/$marco.png" \
+            >/dev/null 2>&1 || true
+          sleep 0.025
+        done
+        exit 0
+      fi
+      sleep 0.01
+    done
+    exit 1
+  ) &
+  PID_CAPTURA=$!
+  arrancar_app
+  wait "$PID_CAPTURA"
+  PID_CAPTURA=
+  DISPLAY="$LISTA_DISPLAY" import -window \
+    "$(DISPLAY="$LISTA_DISPLAY" xdotool search --onlyvisible --name '^NB Sound$' 2>/dev/null |
+      head -n 1)" \
+    "$carpeta/estable.png"
+  local muestras=()
+  local archivo color promedio
+  for archivo in "$carpeta"/*.png; do
+    color=$(magick "$archivo" -format '%[pixel:p{10,200}]' info:)
+    promedio=$(magick "$archivo" -crop 140x600+5+80 +repage \
+      -format '%[fx:round(mean.r*255)],%[fx:round(mean.g*255)],%[fx:round(mean.b*255)]' info:)
+    muestras+=("$(basename "$archivo"):${color}:${promedio}")
+  done
+  local fabrica=0
+  for archivo in "${muestras[@]}"; do
+    if [[ $archivo == *"gray(0)"* || $archivo == *"srgb(0,0,0)"* ]]; then
+      fabrica=$((fabrica + 1))
+    fi
+  done
+  printf 'CAPTURAS_ARRANQUE %s\n' "$(printf '%s\n' "${muestras[@]}" | paste -sd ';' -)"
+  if ((fabrica > 0)); then
+    printf 'El tema de fábrica apareció en %d capturas\n' "$fabrica" >&2
+    return 1
+  fi
+}
+
+comprobar_ventana_desde() {
+  local inicio=$1 fin ventana= limite=${2:-5000}
+  for _ in $(seq 1 200); do
+    ventana=$(DISPLAY="$LISTA_DISPLAY" xdotool search --onlyvisible --name '^NB Sound$' 2>/dev/null |
+      head -n 1 || true)
+    if [[ -n $ventana ]]; then
+      break
+    fi
+    sleep 0.025
+  done
+  fin=$(date +%s%3N)
+  if [[ -z $ventana ]]; then
+    printf 'VENTANAS_X11 %s\n' \
+      "$(DISPLAY="$LISTA_DISPLAY" xdotool search --name '.*' getwindowname %@ 2>/dev/null | paste -sd ';' - || true)"
+    printf 'La ventana no apareció antes de %s ms\n' "$limite" >&2
+    return 1
+  fi
+  printf 'VENTANA_DISPONIBLE ventana=%s aparicionMs=%s\n' \
+    "$ventana" "$((fin - inicio))"
+}
+
+comprobar_ventana_con_apariencia_fallida() {
+  local inicio
+  inicio=$(date +%s%3N)
+  comprobar_ventana_desde "$inicio"
+}
+
+escenario() {
+  local nombre=$1
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    NB_QA_CERT_PATH="$QA_BASE/datos/movil/sync_cert.pem" \
+    DISPLAY="$LISTA_DISPLAY" \
+    node "$RAIZ/scripts/qa/ui-qa.mjs" "$nombre"
+}
+
+escenario_movil() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    NB_QA_CERT_PATH="$QA_BASE/datos/movil/sync_cert.pem" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/mobile-qa.mjs"
+}
+
+escenario_catalogo() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    NB_QA_REGISTROS="$QA_BASE/registros" \
+    NB_QA_CATALOGACION_FUENTES="$QA_BASE/catalogacion/fuentes" \
+    NB_QA_CERT_PATH="$QA_BASE/datos/movil/sync_cert.pem" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/catalog-qa.mjs" "$@"
+}
+
+catalogacion() {
+  preparar_catalogacion
+  export NB_QA_NB_SOUND_LOG='nb_sound_lib=info,nb_sound_lib::net=debug,warn'
+  iniciar_entorno
+  escenario_catalogo red
+  escenario_catalogo sin-red
+  escenario_catalogo importar-lote
+  kill -9 "$PID_APP" 2>/dev/null || true
+  wait "$PID_APP" 2>/dev/null || true
+  PID_APP=
+  arrancar_app
+  escenario_catalogo verificar-lote
+  escenario_catalogo revisar
+  escenario_catalogo privacidad-servicio
+  escenario_catalogo completar-editar
+  escenario_catalogo estado-copia
+  env NB_QA_DB="$DB" NB_QA_ROOT="$QA_BASE" \
+    NB_QA_BACKUP="$QA_BASE/catalogacion/copia.nbsound-backup" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_catalogacion \
+      crea_la_copia_desde_el_arnes -- --ignored --nocapture --test-threads=1
+  sqlite3 "$DB" "INSERT INTO playlists (nombre, tipo, visible) VALUES ('QA Cambio Antes De Restaurar', 'manual', 1);"
+  env NB_QA_DB="$DB" NB_QA_ROOT="$QA_BASE" \
+    NB_QA_BACKUP="$QA_BASE/catalogacion/copia.nbsound-backup" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_catalogacion \
+      prepara_la_restauracion_desde_el_arnes -- --ignored --nocapture --test-threads=1
+  cerrar_app
+  arrancar_app
+  escenario_catalogo verificar-copia
+}
+
+insertar_fondo() {
+  # Lo que suena mientras se prepara: un tono continuo de media hora. Con
+  # canciones reales, el silencio con que acaba una y empieza la siguiente se
+  # contaba como hueco del reproductor.
+  local fondo="$QA_BASE/fixtures/fondo.flac"
+  if [[ ! -f $fondo ]]; then
+    ffmpeg -hide_banner -loglevel error -y -f lavfi \
+      -i 'sine=frequency=330:sample_rate=44100:duration=1800' -ac 2 "$fondo"
+  fi
+  ln -f "$fondo" "$QA_BASE/biblioteca/qa/senales/fondo.flac"
+  local album id
+  album=$(sqlite3 "$DB" "SELECT id FROM albumes WHERE clave = 'qa-fixture-senales'")
+  id=$(sqlite3 "$DB" "SELECT coalesce(max(id), 0) + 1 FROM pistas")
+  sqlite3 "$DB" "INSERT INTO pistas (id, album_id, artista_id, titulo, artista_nombre,
+      album_titulo, numero, disco, duracion_seg, ruta, tamano, estado, verificada)
+    SELECT $id, $album, artista_id, 'QA fondo', 'QA', 'QA señales', 9, 1, 1800.0,
+      'qa/senales/fondo.flac', $(stat -c %s "$fondo"), 'biblioteca', 1
+    FROM albumes WHERE id = $album;"
+  printf '%s\n' "$id" >"$QA_BASE/fixtures/id-fondo"
+}
+
+preparar_agregados() {
+  preparar
+  # Sin agregados ni instrumentales: la copia de la base trae las filas de stems
+  # de la biblioteca real, pero no sus archivos, y la cola del karaoke se pondría
+  # a rehacerlas antes que las pistas de la prueba.
+  rm -rf "$QA_BASE/datos/agregados" "$QA_BASE/datos/stems"
+  mkdir -p "$QA_BASE/datos/agregados" "$QA_BASE/datos/stems"
+  sqlite3 "$DB" <<'SQL'
+DELETE FROM stems;
+UPDATE preferencias SET valor = '{"general":true,"servicios":[]}'
+ WHERE clave = 'politica_de_red';
+SQL
+  insertar_fondo
+}
+
+escenario_karaoke() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    NB_QA_PISTA_FONDO="$(cat "$QA_BASE/fixtures/id-fondo")" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/karaoke-qa.mjs" "$@"
+}
+
+agregados() {
+  preparar_agregados
+  iniciar_entorno
+  escenario_karaoke sin-agregado
+  escenario_karaoke cortar
+  # Cerrar de golpe a mitad de la descarga es el corte: la conexión muere con
+  # el proceso y lo que se había bajado queda en el parcial.
+  kill -9 "$PID_APP" 2>/dev/null || true
+  wait "$PID_APP" 2>/dev/null || true
+  PID_APP=
+  arrancar_app
+  escenario_karaoke reanudar
+  escenario_karaoke con-carga
+  escenario_karaoke instrumental
+  escenario_karaoke cooler
+}
+
+preparar_arranque() {
+  preparar_experiencias
+  # Como en un equipo de uso diario: el análisis encendido y una copia automática
+  # pendiente, que se escribe en la carpeta de copias de la copia aislada.
+  sqlite3 "$DB" <<'SQL'
+UPDATE preferencias SET valor = 'true'
+ WHERE clave IN ('analisis_activado', 'analisis_en_segundo_plano');
+INSERT INTO preferencias (clave, valor) VALUES ('copia_cada_dias', '1')
+  ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor;
+INSERT INTO preferencias (clave, valor) VALUES ('copia_ultima', '"2026-01-01T00:00:00Z"')
+  ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor;
+SQL
+  rm -rf "$QA_BASE/copia-seguridad"
+  mkdir -p "$QA_BASE/copia-seguridad"
+}
+
+preparar_experiencias() {
+  preparar
+  # Los agregados y los instrumentales de verdad, enlazados en solo lectura: el
+  # DJ usa el modelo de texto y las capas necesitan instrumentales listos. Nada
+  # de lo que hace la prueba escribe en ellos.
+  rm -rf "$QA_BASE/datos/agregados" "$QA_BASE/datos/stems"
+  cp -al "$HOME/.local/share/nb-sound/agregados" "$QA_BASE/datos/agregados"
+  cp -al "$HOME/.local/share/nb-sound/stems" "$QA_BASE/datos/stems"
+}
+
+escenario_dj() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/dj-qa.mjs" "$@"
+}
+
+tokenizador_dj() {
+  # Lado de NB Sound: ids y vectores de las 50 frases. La referencia
+  # (`tokenizers` de HuggingFace y ONNX Runtime de Python) no vive en el
+  # repositorio; si NB_QA_REFERENCIA_PY apunta a un guion que la calcula, se
+  # compara aquí.
+  env NB_QA_TEXTO_DJ="$QA_BASE/datos/agregados/texto-dj" \
+    NB_QA_FRASES="$RAIZ/scripts/qa/frases-dj.txt" \
+    NB_QA_ONNXRUNTIME="$RAIZ/src-tauri/binarios/libonnxruntime.so" \
+    NB_QA_SALIDA="$QA_BASE/informes/experiencias-tokenizador.json" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_dj -- --ignored
+  if [[ -n ${NB_QA_REFERENCIA_PY:-} ]]; then
+    "$NB_QA_REFERENCIA_PY" "$QA_BASE/datos/agregados/texto-dj" \
+      "$QA_BASE/informes/experiencias-tokenizador.json"
+  fi
+}
+
+experiencias() {
+  preparar_experiencias
+  tokenizador_dj
+  iniciar_entorno
+  escenario_dj sesion
+  cerrar_app
+  arrancar_app
+  escenario_dj reabierta
+  escenario_dj aciegas
+  escenario_dj hora
+}
+
+escenario_mashups() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/mashups-qa.mjs" "$@"
+}
+
+# DJ Mashups: la pestaña con las dos experiencias, una generación real con
+# HTDemucs sobre la música de la copia, cancelar y que sobreviva a reabrir. La
+# caché de stems va a la caché de la copia; nada se escribe en la música.
+mashups() {
+  preparar_experiencias
+  iniciar_entorno
+  escenario_mashups alternar
+  escenario_mashups generar
+  escenario_mashups cancelar
+  cerrar_app
+  arrancar_app
+  escenario_mashups reabierta
+}
+
+preparar_funciones() {
+  preparar_experiencias
+  insertar_fondo
+  # Que la medición tenga picos que poblar mientras suena el tono.
+  sqlite3 "$DB" "UPDATE sonoridad SET picos = NULL WHERE pista_id IN (
+    SELECT pista_id FROM sonoridad WHERE picos IS NOT NULL ORDER BY pista_id DESC LIMIT 150);"
+}
+
+escenario_funciones() {
+  env NB_QA_DB="$DB" NB_QA_APP_PID="$PID_APP" \
+    NB_QA_RAIZ="$RAIZ" \
+    NB_QA_ROOT="$QA_BASE" \
+    NB_QA_INFORMES="$QA_BASE/informes" \
+    NB_QA_CERT_PATH="$QA_BASE/datos/movil/sync_cert.pem" \
+    NB_QA_PISTA_FONDO="$(cat "$QA_BASE/fixtures/id-fondo")" \
+    DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/funciones-qa.mjs" "$@"
+}
+
+funciones() {
+  preparar_funciones
+  iniciar_entorno
+  escenario_funciones forma
+  escenario_funciones inteligentes
+  escenario_funciones resumen
+  escenario_funciones fiesta
+  cerrar_app
+  mkdir -p "$QA_BASE/funciones"
+  env NB_QA_DB="$DB" NB_QA_ROOT="$QA_BASE" NB_QA_SALIDA="$QA_BASE/funciones" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_funciones \
+      -- --ignored --nocapture --test-threads=1
+}
+
+preparar_revisiones() {
+  preparar_experiencias
+  limpiar_restos_de_importacion
+  local f="$QA_BASE/catalogacion/fuentes"
+  mkdir -p "$f/papelera" "$f/revisar" "$QA_BASE/funciones"
+  rm -f "$f/papelera"/*
+  ffmpeg -hide_banner -loglevel error -y -f lavfi \
+    -i 'sine=frequency=611:sample_rate=48000:duration=16' \
+    -metadata title='QA Papelera' -metadata artist='QA Revisiones' \
+    -metadata album='QA Papelera' -id3v2_version 3 "$f/papelera/nbqa-papelera.mp3"
+  if [[ ! -f "$f/lote/nbqa-lote-120.mp3" ]]; then
+    preparar_lote_qa
+  fi
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'sine=frequency=700:duration=16' \
+    "$f/revisar/nbqa-versiones.mp3"
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=s=4000x4000' -frames:v 1 \
+    "$QA_BASE/funciones/foto-grande.png"
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'mandelbrot=s=4000x3000' -frames:v 1 \
+    -q:v 2 "$QA_BASE/funciones/foto-grande.jpg"
+  local cand='{"titulo":"QA Versiones","artista":"QA","album":"Uno","anio":2020,"tipo":"Album","duracion_seg":16.0}'
+  sqlite3 "$DB" "INSERT INTO por_revisar (ruta, causa, metadatos) VALUES (
+    '$f/revisar/nbqa-versiones.mp3', 'candidatos_ambiguos',
+    '{\"nombre_original\":\"nbqa-versiones.mp3\",\"duracion_seg\":16.0,\"candidatos\":[$cand,$cand,$cand,$cand,$cand]}');"
+  # Más grupos en Por revisar, para ver cómo se reparte la vista.
+  local causa
+  for causa in sin_candidatos duplicado audio_ilegible; do
+    sqlite3 "$DB" "INSERT OR IGNORE INTO por_revisar (ruta, causa, metadatos) VALUES (
+      '$f/revisar/nbqa-$causa.mp3', '$causa', '{\"nombre_original\":\"nbqa-$causa.mp3\",\"duracion_seg\":16.0,\"candidatos\":[]}');"
+  done
+  env NB_QA_DB="$DB" NB_QA_ROOT="$QA_BASE" NB_QA_SALIDA="$QA_BASE/funciones" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_funciones \
+      la_foto_de_perfil -- --ignored --nocapture --test-threads=1
+  env NB_QA_SALIDA="$QA_BASE/funciones" \
+    cargo test --manifest-path "$RAIZ/src-tauri/Cargo.toml" --test qa_funciones \
+      cambiar_la_carpeta -- --ignored --nocapture --test-threads=1
+}
+
+escenario_revision() {
+  env NB_QA_DB="$DB" NB_QA_ROOT="$QA_BASE" NB_QA_APP_PID="$PID_APP" DISPLAY="$LISTA_DISPLAY" \
+    nice -n 10 node "$RAIZ/scripts/qa/revision-qa.mjs" "$@"
+}
+
+revisiones() {
+  preparar_revisiones
+  iniciar_entorno
+  escenario_revision foto hover menu cabecera nombre ancladas pantalla mini cola desplazar barra720 \
+    duplicados revisar diseno papelera karaoke cancelar
+  cerrar_app
+  arrancar_app
+  escenario_revision karaoke-reabierto cancelar-reabierto
+  cerrar_app
+  # Una instalación nueva: otra carpeta de datos, vacía.
+  local base_vieja=$QA_BASE db_viejo=$DB
+  QA_BASE="$base_vieja/nueva"
+  DB="$QA_BASE/datos/nb-sound.sqlite"
+  rm -rf "$QA_BASE"
+  mkdir -p "$QA_BASE/musica" "$QA_BASE/datos" "$QA_BASE/registros" "$QA_BASE/xdg-data" \
+    "$QA_BASE/xdg-cache" "$QA_BASE/xdg-config"
+  arrancar_app
+  escenario_revision bienvenida
+  cerrar_app
+  sqlite3 "$DB" "INSERT INTO preferencias (clave, valor) VALUES ('carpeta_musica', json_quote('$QA_BASE/musica'))
+    ON CONFLICT (clave) DO UPDATE SET valor = excluded.valor;"
+  arrancar_app
+  sleep 8
+  ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'sine=frequency=500:duration=16' \
+    -metadata title='QA Bienvenida' -metadata artist='QA' "$QA_BASE/musica/nbqa-bienvenida.mp3"
+  escenario_revision bienvenida-carpeta
+  cerrar_app
+  QA_BASE=$base_vieja
+  DB=$db_viejo
+}
+
+todo() {
+  preparar
+  iniciar_entorno
+  escenario inicio
+  escenario temas
+  escenario preparar-arranque
+  cerrar_app
+  capturar_primer_fotograma
+  escenario verificar-arranque
+  escenario biblioteca
+  escenario playlists
+  escenario reproduccion
+  escenario mpris
+  escenario atajos
+  escenario perfil
+  cerrar_app
+  preparar_sonoridad
+  arrancar_app
+  escenario sonoridad
+  escenario normalizacion
+}
+
+case ${1:-} in
+  preparar) preparar ;;
+  iniciar) iniciar_entorno ;;
+  inicio|temas|biblioteca|playlists|reproduccion|mpris|atajos|perfil) iniciar_entorno; escenario "$1" ;;
+  movil)
+    preparar
+    iniciar_entorno
+    escenario_movil
+    ;;
+  catalog-probe)
+    preparar
+    iniciar_entorno
+    escenario_catalogo probe
+    ;;
+  catalog-red)
+    preparar_catalogacion_red
+    iniciar_entorno
+    escenario_catalogo red
+    ;;
+  catalog-probe-red)
+    preparar_catalogacion_red
+    iniciar_entorno
+    escenario_catalogo probe-red
+    ;;
+  catalog-sin-red)
+    iniciar_entorno
+    escenario_catalogo sin-red
+    ;;
+  catalogacion) catalogacion ;;
+  agregados) agregados ;;
+  experiencias) experiencias ;;
+  experiencias-hora)
+    preparar_experiencias
+    iniciar_entorno
+    escenario_dj hora
+    ;;
+  funciones) funciones ;;
+  mashups) mashups ;;
+  revisiones) revisiones ;;
+  por-revisar)
+    preparar_revisiones
+    iniciar_entorno
+    escenario_revision revisar diseno
+    ;;
+  revisiones-repetir)
+    shift
+    preparar_experiencias
+    iniciar_entorno
+    escenario_revision "$@"
+    ;;
+  funciones-fiesta)
+    preparar_funciones
+    iniciar_entorno
+    escenario_funciones fiesta
+    ;;
+  arranque-cargado)
+    preparar_arranque
+    iniciar_entorno
+    env NB_QA_DB="$DB" NB_QA_RAIZ="$RAIZ" NB_QA_INFORMES="$QA_BASE/informes" \
+      node "$RAIZ/scripts/qa/arranque-qa.mjs"
+    ;;
+  experiencias-aciegas)
+    preparar_experiencias
+    iniciar_entorno
+    escenario_dj aciegas
+    ;;
+  fallo-apariencia)
+    preparar_fallo_apariencia
+    iniciar_entorno
+    comprobar_ventana_con_apariencia_fallida
+    ;;
+  fallo-js)
+    preparar
+    iniciar_sumidero
+    iniciar_kwin
+    inicio=$(date +%s%3N)
+    lanzar_app
+    comprobar_ventana_desde "$inicio" 5000
+    if ! rg -q 'red de seguridad' "$QA_BASE/registros/app-ui.log"; then
+      printf 'La red de seguridad no dejó constancia en el registro\n' >&2
+      exit 1
+    fi
+    printf 'REGISTRO_RED_SEGURIDAD correcto\n'
+    ;;
+  sonoridad) preparar; preparar_sonoridad; iniciar_entorno; escenario sonoridad ;;
+  normalizacion) preparar; iniciar_entorno; escenario normalizacion ;;
+  arranque)
+    preparar
+    iniciar_sumidero
+    iniciar_kwin
+    arrancar_app
+    escenario preparar-arranque
+    cerrar_app
+    capturar_primer_fotograma
+    escenario verificar-arranque
+    ;;
+  detener) limpiar ;;
+  todo) todo ;;
+  *) uso; exit 2 ;;
+esac

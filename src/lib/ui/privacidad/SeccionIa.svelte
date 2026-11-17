@@ -1,0 +1,250 @@
+<!--
+  @component
+  Ajustes > Inteligencia artificial (ADR-009): el desempate por IA,
+  apagado de fábrica. El interruptor es el consentimiento del servicio en la
+  política de red; el proveedor y el modelo se guardan como preferencias y la
+  clave va al llavero del sistema, del que nunca vuelve a la interfaz.
+-->
+<script lang="ts">
+  import type { ProveedorIa } from '#lib/core/ipc/index.ts';
+  import { privacidad } from '#lib/core/privacidad.svelte.ts';
+  import { textos } from '#lib/i18n/index.ts';
+  import { textosAparte } from '#lib/i18n/aparte.ts';
+  import MenuSelector from '#lib/ui/MenuSelector.svelte';
+
+  const t = textos.ajustes;
+  const a = textosAparte.privacidad;
+  const PROVEEDORES: ProveedorIa[] = ['anthropic', 'openai'];
+
+  let modelo = $state('');
+  let clave = $state('');
+  $effect(() => {
+    if (privacidad.ia) modelo = privacidad.ia.modelo;
+  });
+
+  const activa = $derived(privacidad.activo('proveedorIa'));
+
+  async function guardarClave() {
+    if (!clave.trim()) return;
+    // Se borra del campo pase lo que pase: no debe quedarse en la página.
+    const nueva = clave;
+    clave = '';
+    await privacidad.guardarClave(nueva);
+  }
+</script>
+
+<section id="ia" aria-labelledby="t-ia">
+  <h2 id="t-ia">{t.ia}</h2>
+  <p>{a.iaAyuda}</p>
+  <label class="ajuste">
+    <span class="rotulo">
+      {a.iaActiva}
+      {#if !privacidad.politica.general}<small>{a.iaSinConexion}</small>{/if}
+    </span>
+    <input
+      type="checkbox"
+      role="switch"
+      disabled={!privacidad.politica.general}
+      checked={activa}
+      onchange={(e) => privacidad.servicio('proveedorIa', e.currentTarget.checked)}
+    />
+  </label>
+
+  {#if privacidad.ia}
+    {@const ia = privacidad.ia}
+    <div class="ajuste">
+      <span class="rotulo">{a.proveedor}</span>
+      <MenuSelector
+        opciones={PROVEEDORES.map((p) => ({ valor: p, etiqueta: a.proveedores[p] }))}
+        valor={ia.proveedor}
+        onchange={(v) => privacidad.proveedorYModelo(v, '')}
+      />
+    </div>
+    <label class="ajuste">
+      <span class="rotulo">{a.modelo}<small>{a.modeloAyuda}</small></span>
+      <input
+        class="campo"
+        maxlength="100"
+        spellcheck="false"
+        autocomplete="off"
+        bind:value={modelo}
+        onchange={() => privacidad.proveedorYModelo(ia.proveedor, modelo)}
+      />
+    </label>
+    <div class="ajuste">
+      <span class="rotulo">
+        {a.clave}
+        {#if !ia.llavero}<small>{a.sinLlavero}</small>
+        {:else if ia.tieneClave}<small>{a.claveGuardada}</small>{/if}
+      </span>
+      {#if ia.llavero}
+        {#if ia.tieneClave}
+          <button type="button" class="boton" onclick={() => privacidad.olvidarClave()}>
+            {a.olvidarClave}
+          </button>
+        {:else}
+          <form
+            class="clave"
+            onsubmit={(e) => {
+              e.preventDefault();
+              void guardarClave();
+            }}
+          >
+            <input
+              class="campo"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder={a.claveNueva}
+              aria-label={a.clave}
+              bind:value={clave}
+            />
+            <button type="submit" class="boton principal" disabled={!clave.trim()}>
+              {a.guardarClave}
+            </button>
+          </form>
+        {/if}
+      {/if}
+    </div>
+  {/if}
+  {#if privacidad.fallo}<p role="alert" class="fallo">{a.noGuardado}</p>{/if}
+</section>
+
+<style>
+  section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-3);
+    padding: var(--ns-espacio-5);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-lg);
+    background: var(--m3c-surface-container-low);
+    scroll-margin-top: var(--ns-espacio-4);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--ns-texto-lg);
+  }
+
+  .ajuste {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ns-espacio-4);
+  }
+
+  .rotulo {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-1);
+    font-size: var(--ns-texto-sm);
+    font-weight: 600;
+  }
+
+  .rotulo small,
+  p {
+    margin: 0;
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-sm);
+    font-weight: 400;
+  }
+
+  p.fallo {
+    color: var(--m3c-error);
+  }
+
+  input[type='checkbox'] {
+    /* Con un rótulo largo al lado, el flex lo encogía y el interruptor se rompía. */
+    flex-shrink: 0;
+    flex: none;
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 3rem;
+    height: 1.75rem;
+    border: 2px solid var(--m3c-outline);
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-surface-container-highest);
+    cursor: pointer;
+    transition:
+      background var(--ns-duracion-corta) var(--ns-curva),
+      border-color var(--ns-duracion-corta) var(--ns-curva);
+  }
+
+  input[type='checkbox']::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.25rem;
+    transform: translateY(-50%);
+    width: 1rem;
+    height: 1rem;
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-outline);
+    transition:
+      transform var(--ns-duracion-corta) var(--ns-curva),
+      background var(--ns-duracion-corta) var(--ns-curva),
+      width var(--ns-duracion-corta) var(--ns-curva),
+      height var(--ns-duracion-corta) var(--ns-curva);
+  }
+
+  input[type='checkbox']:checked {
+    background: var(--m3c-primary);
+    border-color: var(--m3c-primary);
+  }
+
+  input[type='checkbox']:checked::before {
+    transform: translate(1.25rem, -50%);
+    background: var(--m3c-on-primary);
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  input[type='checkbox']:focus-visible {
+    outline: 2px solid var(--m3c-primary);
+    outline-offset: 2px;
+  }
+
+  .campo {
+    min-width: 14rem;
+    height: 2.5rem;
+    padding: 0 var(--ns-espacio-3);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-sm);
+    background: var(--m3c-surface-container);
+    color: var(--m3c-on-surface);
+    font: inherit;
+  }
+
+  .clave {
+    display: flex;
+    gap: var(--ns-espacio-2);
+  }
+
+  .boton {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    height: 2.5rem;
+    padding: 0 var(--ns-espacio-4);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-pleno);
+    background: none;
+    color: var(--m3c-on-surface);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .boton.principal {
+    border-color: var(--m3c-primary);
+    background: var(--m3c-primary);
+    color: var(--m3c-on-primary);
+  }
+
+  .boton:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+</style>

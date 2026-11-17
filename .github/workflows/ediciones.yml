@@ -1,0 +1,72 @@
+name: Ediciones
+
+# Los paquetes de Windows y macOS de una versión. Linux se empaqueta y se prueba en
+# local (scripts/empaquetar-linux.sh); estas dos plataformas se construyen aquí,
+# firmadas para el actualizador con la clave guardada en los secretos del
+# repositorio, y quedan como artefactos de la ejecución para que entren en la
+# publicación junto a lo de Linux y en la misma lista de huellas firmada.
+#
+# Manual y no en cada push: son compilaciones de release con LTO, de más de diez
+# minutos cada una, y solo tienen sentido al preparar una entrega. Nadie las ha
+# ejecutado en un equipo real: cada edición lo dice en su resumen.
+# Ver docs/developer/packaging.md
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  edicion:
+    name: ${{ matrix.nombre }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - nombre: Windows (sin probar)
+            os: windows-latest
+          # Solo Apple Silicon: ONNX Runtime no publica binario para Mac con
+          # Intel (scripts/binarios.json).
+          - nombre: macOS (sin probar)
+            os: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.100.0
+      - run: pnpm install --frozen-lockfile
+      - name: Binarios del instalador, con su SHA-256 comprobado
+        run: pnpm binarios
+      # `createUpdaterArtifacts` firma cada paquete para el actualizador; sin la
+      # clave privada la compilación fallaría, por eso solo se activa aquí.
+      - name: Empaquetar
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --config '{"bundle":{"createUpdaterArtifacts":true}}'
+      - name: Avisar de que no está verificada
+        shell: bash
+        run: echo "::warning::${{ matrix.nombre }} se construyó, pero nadie la ha ejecutado en un equipo real."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.nombre }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.exe.sig
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/msi/*.msi.sig
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error

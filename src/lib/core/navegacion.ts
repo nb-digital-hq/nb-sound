@@ -1,0 +1,137 @@
+/**
+ * Los destinos de la barra lateral.
+ *
+ * Contrato: docs/adr/007-information-architecture.md. Los destinos fijos y uno,
+ * Por revisar, que solo existe mientras hay algo pendiente. Añadir un destino exige
+ * un ADR.
+ *
+ * Los rótulos son getters y no valores: se leen al pintarse, así que siguen al
+ * idioma de la interfaz. Un valor guardado al cargar el módulo se quedaba en el
+ * idioma del arranque.
+ */
+
+import { textos } from '#lib/i18n/index.ts';
+import type { NombreDeIcono } from '#lib/ui/iconos.ts';
+
+export interface Destino {
+  readonly id: string;
+  readonly ruta: string;
+  readonly etiqueta: string;
+  readonly icono: NombreDeIcono;
+}
+
+const INICIO: Destino = {
+  id: 'inicio',
+  ruta: '/',
+  get etiqueta() {
+    return textos.nav.inicio;
+  },
+  icono: 'inicio'
+};
+const BIBLIOTECA: Destino = {
+  id: 'biblioteca',
+  ruta: '/biblioteca',
+  get etiqueta() {
+    return textos.nav.biblioteca;
+  },
+  icono: 'biblioteca'
+};
+const PLAYLISTS: Destino = {
+  id: 'playlists',
+  ruta: '/playlists',
+  get etiqueta() {
+    return textos.nav.playlists;
+  },
+  icono: 'playlists'
+};
+const DJ: Destino = {
+  id: 'dj',
+  ruta: '/dj',
+  get etiqueta() {
+    return textos.nav.dj;
+  },
+  icono: 'dj'
+};
+const A_CIEGAS: Destino = {
+  id: 'a-ciegas',
+  ruta: '/a-ciegas',
+  get etiqueta() {
+    return textos.nav.aCiegas;
+  },
+  icono: 'aCiegas'
+};
+const TU_MUSICA: Destino = {
+  id: 'tu-musica',
+  ruta: '/tu-musica',
+  get etiqueta() {
+    return textos.nav.tuMusica;
+  },
+  icono: 'tuMusica'
+};
+
+export const DESTINOS: readonly Destino[] = [
+  INICIO,
+  BIBLIOTECA,
+  PLAYLISTS,
+  DJ,
+  A_CIEGAS,
+  TU_MUSICA
+];
+
+export const AJUSTES: Destino = {
+  id: 'ajustes',
+  ruta: '/ajustes',
+  get etiqueta() {
+    return textos.nav.ajustes;
+  },
+  icono: 'ajustes'
+};
+
+export const POR_REVISAR: Destino = {
+  id: 'por-revisar',
+  ruta: '/por-revisar',
+  get etiqueta() {
+    return textos.nav.porRevisar;
+  },
+  icono: 'porRevisar'
+};
+
+/**
+ * Las secciones de la barra lateral, con sus rótulos. Ajustes y Por revisar van
+ * aparte, al pie.
+ */
+export const SECCIONES: readonly {
+  readonly etiqueta: string;
+  readonly destinos: readonly Destino[];
+}[] = [
+  {
+    get etiqueta() {
+      return textos.nav.secciones.explorar;
+    },
+    destinos: [INICIO]
+  },
+  {
+    get etiqueta() {
+      return textos.nav.secciones.tuMusica;
+    },
+    destinos: [BIBLIOTECA, PLAYLISTS, TU_MUSICA]
+  },
+  {
+    get etiqueta() {
+      return textos.nav.secciones.experiencias;
+    },
+    destinos: [DJ, A_CIEGAS]
+  }
+];
+
+/** Los destinos que se pintan, en orden, según cuántos pendientes haya. */
+export function destinosVisibles(pendientes: number): readonly Destino[] {
+  return pendientes > 0 ? [...DESTINOS, POR_REVISAR, AJUSTES] : [...DESTINOS, AJUSTES];
+}
+
+/** Si una ruta pertenece a un destino (la raíz solo a sí misma). */
+export function estaActivo(destino: Destino, ruta: string): boolean {
+  // La aplicación instalada abre en `tauri://localhost`, con la ruta vacía.
+  if (destino.ruta === '/') return ruta === '/' || ruta === '';
+  return ruta === destino.ruta || ruta.startsWith(`${destino.ruta}/`);
+}

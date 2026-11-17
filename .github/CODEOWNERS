@@ -1,0 +1,13 @@
+# Code owners of NB Sound
+#
+# Approval from the owner of an area is required to merge changes to it.
+
+*                                   @nb-digital-hq/maintainers
+
+/docs/legal/                        @nb-digital-hq/maintainers
+/docs/adr/                          @nb-digital-hq/maintainers
+/docs/audit/                        @nb-digital-hq/maintainers
+/.github/workflows/                 @nb-digital-hq/maintainers
+/src-tauri/migrations/              @nb-digital-hq/maintainers
+/src-tauri/src/net.rs               @nb-digital-hq/maintainers
+/src-tauri/src/movil/               @nb-digital-hq/maintainers

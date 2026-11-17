@@ -1,0 +1,162 @@
+<!--
+  @component
+  Ajustes > Privacidad y servicios en línea (ADR-007 y ADR-009): el
+  interruptor general y uno por servicio, cada uno con lo que envía. De fábrica
+  todo está apagado.
+-->
+<script lang="ts">
+  import { privacidad, SERVICIOS_EN_LINEA } from '#lib/core/privacidad.svelte.ts';
+  import ClaveServicio from '#lib/ui/privacidad/ClaveServicio.svelte';
+  import { textos } from '#lib/i18n/index.ts';
+  import { textosAparte } from '#lib/i18n/aparte.ts';
+
+  const t = textos.ajustes;
+  const a = textosAparte.privacidad;
+</script>
+
+<section id="privacidad" aria-labelledby="t-privacidad">
+  <h2 id="t-privacidad">{t.privacidad}</h2>
+  <p>{a.privacidadAyuda}</p>
+  <label class="ajuste">
+    <span class="rotulo">{a.conexion}<small>{a.conexionAyuda}</small></span>
+    <input
+      type="checkbox"
+      role="switch"
+      checked={privacidad.politica.general}
+      onchange={(e) => privacidad.general(e.currentTarget.checked)}
+    />
+  </label>
+  <ul class="servicios" class:apagado={!privacidad.politica.general}>
+    {#each SERVICIOS_EN_LINEA as servicio (servicio)}
+      <li>
+        <label class="ajuste">
+          <span class="rotulo">
+            {a.servicios[servicio].nombre}<small>{a.servicios[servicio].envia}</small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            disabled={!privacidad.politica.general}
+            checked={privacidad.activo(servicio)}
+            onchange={(e) => privacidad.servicio(servicio, e.currentTarget.checked)}
+          />
+        </label>
+        {#if servicio === 'acoustId'}
+          <ClaveServicio {servicio} />
+        {/if}
+      </li>
+    {/each}
+  </ul>
+  {#if privacidad.fallo}<p role="alert" class="fallo">{a.noGuardado}</p>{/if}
+</section>
+
+<style>
+  section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-3);
+    padding: var(--ns-espacio-5);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-lg);
+    background: var(--m3c-surface-container-low);
+    scroll-margin-top: var(--ns-espacio-4);
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--ns-texto-lg);
+  }
+
+  .ajuste {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ns-espacio-4);
+  }
+
+  .rotulo {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-1);
+    font-size: var(--ns-texto-sm);
+    font-weight: 600;
+  }
+
+  .rotulo small,
+  p {
+    margin: 0;
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-sm);
+    font-weight: 400;
+  }
+
+  p.fallo {
+    color: var(--m3c-error);
+  }
+
+  input[type='checkbox'] {
+    /* Con un rótulo largo al lado, el flex lo encogía y el interruptor se rompía. */
+    flex-shrink: 0;
+    flex: none;
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    width: 3rem;
+    height: 1.75rem;
+    border: 2px solid var(--m3c-outline);
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-surface-container-highest);
+    cursor: pointer;
+    transition:
+      background var(--ns-duracion-corta) var(--ns-curva),
+      border-color var(--ns-duracion-corta) var(--ns-curva);
+  }
+
+  input[type='checkbox']::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.25rem;
+    transform: translateY(-50%);
+    width: 1rem;
+    height: 1rem;
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-outline);
+    transition:
+      transform var(--ns-duracion-corta) var(--ns-curva),
+      background var(--ns-duracion-corta) var(--ns-curva),
+      width var(--ns-duracion-corta) var(--ns-curva),
+      height var(--ns-duracion-corta) var(--ns-curva);
+  }
+
+  input[type='checkbox']:checked {
+    background: var(--m3c-primary);
+    border-color: var(--m3c-primary);
+  }
+
+  input[type='checkbox']:checked::before {
+    transform: translate(1.25rem, -50%);
+    background: var(--m3c-on-primary);
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  input[type='checkbox']:focus-visible {
+    outline: 2px solid var(--m3c-primary);
+    outline-offset: 2px;
+  }
+
+  .servicios {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-3);
+    margin: 0;
+    padding: var(--ns-espacio-3) 0 0;
+    border-top: 1px solid var(--m3c-outline-variant);
+    list-style: none;
+  }
+
+  .servicios.apagado {
+    opacity: 0.6;
+  }
+</style>

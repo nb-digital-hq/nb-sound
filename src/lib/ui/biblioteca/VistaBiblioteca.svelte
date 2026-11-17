@@ -1,0 +1,993 @@
+<!--
+  Biblioteca: título y cuenta,
+  las pestañas Álbumes, Artistas y Pistas arriba a la derecha, la búsqueda, el
+  filtro de favoritas y los órdenes en fichas. La lista de canciones es la ventana
+  virtual medida con 100.000 filas; Sin verificar viene de ADR-007.
+-->
+<script lang="ts">
+  import { cambios } from '#lib/core/cambios.svelte.ts';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
+  import { untrack } from 'svelte';
+  import {
+    type AlbumResumen,
+    type ArtistaResumen,
+    bibliotecaAlbumes,
+    bibliotecaArtistas,
+    bibliotecaPistas,
+    type ConsultaPistas,
+    type OrdenAlbumes,
+    type OrdenArtistas,
+    type OrdenPistas,
+    type PistaResumen,
+    reproducirLista,
+    urlPortada
+  } from '#lib/core/ipc/index.ts';
+  import {
+    recordado,
+    type PaginaAlbumes,
+    type PaginaArtistas,
+    type PaginaPistas
+  } from '#lib/core/ipc/index.ts';
+  import { estadoBiblioteca, type ModoRejilla } from '#lib/core/estadoVistas.svelte.ts';
+  import { reproductor } from '#lib/core/reproductor.svelte.ts';
+  import { textos } from '#lib/i18n/index.ts';
+  import FilaPista from '#lib/ui/biblioteca/FilaPista.svelte';
+  import EstadoVacio from '#lib/ui/EstadoVacio.svelte';
+  import Icon from '#lib/ui/Icon.svelte';
+  import ListaVirtual from '#lib/ui/lista/ListaVirtual.svelte';
+  import MenuSelector from '#lib/ui/MenuSelector.svelte';
+  import { TAM_BLOQUE } from '#lib/ui/lista/ventana.ts';
+
+  type Vista = 'albumes' | 'artistas' | 'pistas';
+  const t = textos.biblioteca;
+
+  const ORDENES_PISTAS: OrdenPistas[] = [
+    'tituloAsc',
+    'tituloDesc',
+    'artistaAsc',
+    'artistaDesc',
+    'albumAsc',
+    'albumDesc',
+    'anioDesc',
+    'anioAsc',
+    'duracionDesc',
+    'duracionAsc',
+    'recientes',
+    'antiguas',
+    'masReproducidas',
+    'menosReproducidas'
+  ];
+  const ORDENES_ALBUMES: OrdenAlbumes[] = [
+    'tituloAsc',
+    'tituloDesc',
+    'artistaAsc',
+    'anioDesc',
+    'anioAsc',
+    'recientes'
+  ];
+  const ORDENES_ARTISTAS: OrdenArtistas[] = ['nombreAsc', 'nombreDesc', 'masPistas'];
+
+  const paramVista = $derived(
+    (['albumes', 'artistas', 'pistas'] as const).find(
+      (v) => v === page.url.searchParams.get('vista')
+    )
+  );
+
+  $effect(() => {
+    if (paramVista && paramVista !== estadoBiblioteca.vista) {
+      estadoBiblioteca.vista = paramVista;
+    }
+  });
+
+  const vista = $derived<Vista>(estadoBiblioteca.vista);
+
+  let texto = $state('');
+  let textoAplicado = $state('');
+  let modoRejilla = $state<ModoRejilla>('md');
+
+  let favoritas = $state(estadoBiblioteca.pistas.favoritas);
+  let sinVerificar = $state(estadoBiblioteca.pistas.sinVerificar);
+  let paraCantar = $state(estadoBiblioteca.pistas.paraCantar);
+  // "Verlas en la biblioteca" de la consola de karaoke, también estando ya aquí.
+  $effect(() => {
+    if (page.url.searchParams.has('cantar')) paraCantar = true;
+  });
+
+  let ordenPistas = $state<OrdenPistas>(estadoBiblioteca.pistas.orden);
+  let ordenAlbumes = $state<OrdenAlbumes>(estadoBiblioteca.albumes.orden);
+  let ordenArtistas = $state<OrdenArtistas>(estadoBiblioteca.artistas.orden);
+
+  // Al cambiar de pestaña de Biblioteca, restaurar su estado propio e independiente
+  $effect(() => {
+    const v = vista;
+    untrack(() => {
+      estadoBiblioteca.vista = v;
+      if (v === 'albumes') {
+        texto = estadoBiblioteca.albumes.busqueda;
+        modoRejilla = estadoBiblioteca.albumes.modoRejilla;
+      } else if (v === 'artistas') {
+        texto = estadoBiblioteca.artistas.busqueda;
+        modoRejilla = estadoBiblioteca.artistas.modoRejilla;
+      } else {
+        texto = estadoBiblioteca.pistas.busqueda;
+        modoRejilla = estadoBiblioteca.pistas.modoRejilla;
+      }
+      textoAplicado = texto;
+    });
+  });
+
+  // Persistir en memoria para cada pestaña por separado
+  $effect(() => {
+    const v = vista;
+    const t = texto;
+    const m = modoRejilla;
+    if (v === 'albumes') {
+      estadoBiblioteca.albumes.busqueda = t;
+      estadoBiblioteca.albumes.modoRejilla = m;
+      estadoBiblioteca.albumes.orden = ordenAlbumes;
+    } else if (v === 'artistas') {
+      estadoBiblioteca.artistas.busqueda = t;
+      estadoBiblioteca.artistas.modoRejilla = m;
+      estadoBiblioteca.artistas.orden = ordenArtistas;
+    } else {
+      estadoBiblioteca.pistas.busqueda = t;
+      estadoBiblioteca.pistas.modoRejilla = m;
+      estadoBiblioteca.pistas.orden = ordenPistas;
+      estadoBiblioteca.pistas.favoritas = favoritas;
+      estadoBiblioteca.pistas.sinVerificar = sinVerificar;
+      estadoBiblioteca.pistas.paraCantar = paraCantar;
+    }
+  });
+
+  const ordenesActuales = $derived(
+    vista === 'pistas' ? ORDENES_PISTAS : vista === 'albumes' ? ORDENES_ALBUMES : ORDENES_ARTISTAS
+  );
+
+  // La búsqueda espera a que se deje de escribir: cada tecla no es una consulta.
+  let espera: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const valor = texto;
+    clearTimeout(espera);
+    espera = setTimeout(() => (textoAplicado = valor.trim()), 200);
+    return () => clearTimeout(espera);
+  });
+
+  const consulta = $derived<ConsultaPistas>({
+    texto: textoAplicado || null,
+    favoritas,
+    sinVerificar,
+    paraCantar,
+    albumId: null,
+    artistaId: null,
+    orden: ordenPistas
+  });
+
+  // --- Pistas ---
+  let total = $state<number | null>(null);
+  let primerBloque: PistaResumen[] = [];
+  let pedido = 0;
+  // `version` vuelve a montar la lista (otra consulta, desde arriba); `recarga`
+  // la refresca donde está (la biblioteca cambió).
+  let version = $state(0);
+  let recarga = $state(0);
+  let claveMontada = '';
+  // Editar o completar una pista la cambia en la base: se vuelve a pedir la lista.
+  let recargas = $state(0);
+  $effect(() => {
+    const c = consulta;
+    void recargas;
+    void cambios.version;
+    if (vista !== 'pistas') return;
+    const clave = JSON.stringify(c);
+    // Al volver a la pestaña, lo de la última vez al instante (la lista se monta
+    // ya con su primer bloque) y lo nuevo lo refresca sin moverla.
+    if (total === null) {
+      const previa = recordado<PaginaPistas>('biblioteca_pistas', {
+        consulta: c,
+        desde: 0,
+        limite: TAM_BLOQUE
+      });
+      if (previa) {
+        primerBloque = previa.pistas;
+        total = previa.total;
+        claveMontada = clave;
+      }
+    }
+    const v = ++pedido;
+    void bibliotecaPistas(c, 0, TAM_BLOQUE).then((p) => {
+      if (v !== pedido) return;
+      primerBloque = p.pistas;
+      total = p.total;
+      if (clave !== claveMontada) {
+        claveMontada = clave;
+        version = v;
+      } else {
+        recarga = v;
+      }
+    });
+  });
+
+  async function cargarBloque(b: number): Promise<PistaResumen[]> {
+    if (b === 0) return primerBloque;
+    return (await bibliotecaPistas(consulta, b * TAM_BLOQUE, TAM_BLOQUE)).pistas;
+  }
+
+  // --- Álbumes y artistas: por páginas que se añaden al llegar al final ---
+  const sencillos = $derived(
+    estadoBiblioteca.albumes.grupo === 'todos'
+      ? undefined
+      : estadoBiblioteca.albumes.grupo === 'sencillos'
+  );
+  let albumes = $state<AlbumResumen[]>([]);
+  let artistas = $state<ArtistaResumen[]>([]);
+  let pistasRejilla = $state<PistaResumen[]>([]);
+  let totalAlbumes = $state(0);
+  let totalArtistas = $state(0);
+  let pedidoGrid = 0;
+  let cargandoGrid = false;
+  // Para no enseñar "vacía" mientras llega la primera página.
+  let gridListo = $state(false);
+  const PAGINA = 120;
+
+  // Al volver a la pestaña, la rejilla de la última vez al instante; lo nuevo la
+  // sustituye al llegar.
+  function sembrarAlbumes(texto: string | null, orden: OrdenAlbumes) {
+    const previa = recordado<PaginaAlbumes>('biblioteca_albumes', {
+      consulta: { texto, artistaId: null, orden, sencillos },
+      desde: 0,
+      limite: PAGINA
+    });
+    if (!previa) return;
+    albumes = previa.albumes;
+    totalAlbumes = previa.total;
+    gridListo = true;
+  }
+
+  function sembrarArtistas(texto: string | null, orden: OrdenArtistas) {
+    const previa = recordado<PaginaArtistas>('biblioteca_artistas', {
+      consulta: { texto, orden },
+      desde: 0,
+      limite: PAGINA
+    });
+    if (!previa) return;
+    artistas = previa.artistas;
+    totalArtistas = previa.total;
+    gridListo = true;
+  }
+
+  $effect(() => {
+    void cambios.version;
+    const busqueda = textoAplicado || null;
+    if (vista === 'pistas') {
+      if (modoRejilla !== 'lista') {
+        const g = ++pedidoGrid;
+        cargandoGrid = true;
+        void bibliotecaPistas(consulta, 0, PAGINA).then((p) => {
+          if (g !== pedidoGrid) return;
+          pistasRejilla = p.pistas;
+          total = p.total;
+          cargandoGrid = false;
+        });
+      }
+    } else if (vista === 'albumes') {
+      const orden = ordenAlbumes;
+      // Sin `untrack`, leer la rejilla la hacía depender de sí misma: con la
+      // biblioteca vacía, sembrar escribía otra lista vacía y el efecto volvía a
+      // correr sin fin (Biblioteca acababa en "500" en una instalación nueva).
+      if (untrack(() => albumes.length) === 0) sembrarAlbumes(busqueda, orden);
+      const g = ++pedidoGrid;
+      cargandoGrid = true;
+      void bibliotecaAlbumes(
+        { texto: busqueda, artistaId: null, orden, sencillos },
+        0,
+        PAGINA
+      ).then((p) => {
+        if (g !== pedidoGrid) return;
+        albumes = p.albumes;
+        totalAlbumes = p.total;
+        cargandoGrid = false;
+        gridListo = true;
+      });
+    } else if (vista === 'artistas') {
+      const orden = ordenArtistas;
+      if (untrack(() => artistas.length) === 0) sembrarArtistas(busqueda, orden);
+      const g = ++pedidoGrid;
+      cargandoGrid = true;
+      void bibliotecaArtistas({ texto: busqueda, orden }, 0, PAGINA).then((p) => {
+        if (g !== pedidoGrid) return;
+        artistas = p.artistas;
+        totalArtistas = p.total;
+        cargandoGrid = false;
+        gridListo = true;
+      });
+    }
+  });
+
+  function anadirUnicos<T extends { id: number }>(actuales: T[], nuevos: T[]): T[] {
+    const vistos = new Set(actuales.map((x) => x.id));
+    return [...actuales, ...nuevos.filter((x) => !vistos.has(x.id))];
+  }
+
+  async function cargarMasPistas(g: number) {
+    if (pistasRejilla.length === 0 || pistasRejilla.length >= (total ?? 0)) return;
+    const p = await bibliotecaPistas(consulta, pistasRejilla.length, PAGINA);
+    if (g === pedidoGrid) pistasRejilla = anadirUnicos(pistasRejilla, p.pistas);
+  }
+
+  async function cargarMasAlbumes(g: number, busqueda: string | null) {
+    if (albumes.length === 0 || albumes.length >= totalAlbumes) return;
+    const p = await bibliotecaAlbumes(
+      { texto: busqueda, artistaId: null, orden: ordenAlbumes, sencillos },
+      albumes.length,
+      PAGINA
+    );
+    if (g === pedidoGrid) albumes = anadirUnicos(albumes, p.albumes);
+  }
+
+  async function cargarMasArtistas(g: number, busqueda: string | null) {
+    if (artistas.length === 0 || artistas.length >= totalArtistas) return;
+    const p = await bibliotecaArtistas(
+      { texto: busqueda, orden: ordenArtistas },
+      artistas.length,
+      PAGINA
+    );
+    if (g === pedidoGrid) artistas = anadirUnicos(artistas, p.artistas);
+  }
+
+  async function masGrid() {
+    if (cargandoGrid) return;
+    const busqueda = textoAplicado || null;
+    const g = pedidoGrid;
+    cargandoGrid = true;
+    try {
+      if (vista === 'pistas') await cargarMasPistas(g);
+      else if (vista === 'albumes') await cargarMasAlbumes(g, busqueda);
+      else if (vista === 'artistas') await cargarMasArtistas(g, busqueda);
+    } finally {
+      if (g === pedidoGrid) cargandoGrid = false;
+    }
+  }
+
+  function alFinal(nodo: HTMLElement) {
+    const o = new IntersectionObserver((e) => {
+      if (e.some((x) => x.isIntersecting)) void masGrid();
+    });
+    o.observe(nodo);
+    return { destroy: () => o.disconnect() };
+  }
+
+  const cuenta = $derived(
+    vista === 'pistas'
+      ? t.cuentaPistas(total ?? 0)
+      : vista === 'albumes'
+        ? t.cuentaAlbumes(totalAlbumes)
+        : t.cuentaArtistas(totalArtistas)
+  );
+</script>
+
+{#snippet vacia(filtrada: boolean)}
+  {#if filtrada}
+    <EstadoVacio icono="buscar" titulo={t.sinCoincidencias} texto={t.sinCoincidenciasTexto} />
+  {:else}
+    <EstadoVacio icono="biblioteca" titulo={t.vaciaBiblioteca} texto={t.vaciaTexto} conAnadir />
+  {/if}
+{/snippet}
+
+<section class="vista">
+  <header class="cabecera">
+    <div class="cabecera-info">
+      <h1>{t.titulo}</h1>
+      <p class="cuenta">{cuenta}</p>
+    </div>
+    <div class="pestanas" role="tablist">
+      {#each ['albumes', 'artistas', 'pistas'] as const as v (v)}
+        <button
+          type="button"
+          role="tab"
+          class="pestana"
+          class:activa={vista === v}
+          aria-selected={vista === v}
+          onclick={() => {
+            estadoBiblioteca.vista = v;
+            void goto(`/biblioteca?vista=${v}`, {
+              replace: true,
+              reset: false
+            });
+          }}
+        >
+          {t.vistas[v]}
+        </button>
+      {/each}
+    </div>
+  </header>
+
+  <div class="barra-filtros">
+    <div class="filtros-izq">
+      <label class="filtro-buscar">
+        <Icon nombre="buscar" tamano={16} />
+        <input type="search" placeholder={t.buscar} aria-label={t.buscar} bind:value={texto} />
+      </label>
+    </div>
+
+    <div class="filtros-der">
+      {#if vista === 'albumes'}
+        <div class="fichas">
+          {#each ['todos', 'albumes', 'sencillos'] as const as g (g)}
+            <button
+              type="button"
+              class="ficha"
+              class:activa={estadoBiblioteca.albumes.grupo === g}
+              aria-pressed={estadoBiblioteca.albumes.grupo === g}
+              onclick={() => (estadoBiblioteca.albumes.grupo = g)}
+            >
+              {t.grupos[g]}
+            </button>
+          {/each}
+        </div>
+      {/if}
+      {#if vista === 'pistas'}
+        <div class="fichas">
+          <button
+            type="button"
+            class="ficha"
+            class:activa={favoritas}
+            aria-pressed={favoritas}
+            onclick={() => (favoritas = !favoritas)}
+          >
+            <Icon nombre="favorito" tamano={14} />{t.favoritas}
+          </button>
+          <button
+            type="button"
+            class="ficha"
+            class:activa={sinVerificar}
+            aria-pressed={sinVerificar}
+            onclick={() => (sinVerificar = !sinVerificar)}
+          >
+            <Icon nombre="advertencia" tamano={14} />{t.sinVerificar}
+          </button>
+          <button
+            type="button"
+            class="ficha"
+            class:activa={paraCantar}
+            aria-pressed={paraCantar}
+            onclick={() => (paraCantar = !paraCantar)}
+          >
+            <Icon nombre="microfono" tamano={14} />{t.paraCantar}
+          </button>
+        </div>
+      {/if}
+
+      <div class="control-orden">
+        <MenuSelector
+          rotulo={t.orden}
+          opciones={ordenesActuales.map((o) => ({ valor: o, etiqueta: t.ordenes[o] }))}
+          valor={vista === 'pistas'
+            ? ordenPistas
+            : vista === 'albumes'
+              ? ordenAlbumes
+              : ordenArtistas}
+          onchange={(v) => {
+            if (vista === 'pistas') ordenPistas = v as OrdenPistas;
+            else if (vista === 'albumes') ordenAlbumes = v as OrdenAlbumes;
+            else ordenArtistas = v as OrdenArtistas;
+          }}
+        />
+      </div>
+
+      <div class="densidades" role="group" aria-label={t.densidad.gridMd}>
+        <button
+          type="button"
+          class="boton-densidad"
+          class:activa={modoRejilla === 'sm'}
+          aria-pressed={modoRejilla === 'sm'}
+          aria-label={t.densidad.gridSm}
+          onclick={() => (modoRejilla = 'sm')}
+        >
+          <Icon nombre="cuadriculaPequena" tamano={16} />
+        </button>
+        <button
+          type="button"
+          class="boton-densidad"
+          class:activa={modoRejilla === 'md'}
+          aria-pressed={modoRejilla === 'md'}
+          aria-label={t.densidad.gridMd}
+          onclick={() => (modoRejilla = 'md')}
+        >
+          <Icon nombre="cuadricula" tamano={16} />
+        </button>
+        <button
+          type="button"
+          class="boton-densidad"
+          class:activa={modoRejilla === 'lg'}
+          aria-pressed={modoRejilla === 'lg'}
+          aria-label={t.densidad.gridLg}
+          onclick={() => (modoRejilla = 'lg')}
+        >
+          <Icon nombre="cuadriculaGrande" tamano={16} />
+        </button>
+        <button
+          type="button"
+          class="boton-densidad"
+          class:activa={modoRejilla === 'lista'}
+          aria-pressed={modoRejilla === 'lista'}
+          aria-label={t.densidad.lista}
+          onclick={() => (modoRejilla = 'lista')}
+        >
+          <Icon nombre="lista" tamano={16} />
+        </button>
+      </div>
+    </div>
+  </div>
+
+  {#if vista === 'pistas'}
+    {#if modoRejilla === 'lista'}
+      <div class="lista">
+        {#if total === 0}
+          {@render vacia(Boolean(textoAplicado || favoritas || sinVerificar || paraCantar))}
+        {:else if total !== null}
+          {#key version}
+            <ListaVirtual {total} altoFila={56} {cargarBloque} {recarga} etiqueta={t.lista}>
+              {#snippet fila(p: PistaResumen, i: number, rapido: boolean)}
+                <FilaPista
+                  pista={p}
+                  numero={i + 1}
+                  {rapido}
+                  sonando={reproductor.instantanea.pistaId === p.id}
+                  onreproducir={() => reproducirLista(consulta, i)}
+                  oncambiada={() => recargas++}
+                />
+              {/snippet}
+            </ListaVirtual>
+          {/key}
+        {/if}
+      </div>
+    {:else}
+      <ul
+        class="rejilla"
+        class:sm={modoRejilla === 'sm'}
+        class:md={modoRejilla === 'md'}
+        class:lg={modoRejilla === 'lg'}
+      >
+        {#each pistasRejilla as p, i (p.id)}
+          <li>
+            <div class="tarjeta">
+              <button
+                type="button"
+                class="caratula"
+                onclick={() => reproducirLista(consulta, i)}
+                aria-label={`${t.reproducir} ${p.titulo}`}
+              >
+                {#if p.tienePortada}
+                  <img
+                    src={urlPortada('pista', p.id, 320)}
+                    alt=""
+                    loading="lazy"
+                    decoding="async"
+                  />
+                {:else}
+                  <Icon nombre="cancion" tamano={40} />
+                {/if}
+              </button>
+              <span class="nombre" title={p.titulo}>{p.titulo}</span>
+              <span class="sub" title={`${p.artista} · ${p.album}`}>
+                {[p.artista, p.album].filter(Boolean).join(' · ')}
+              </span>
+            </div>
+          </li>
+        {/each}
+      </ul>
+      {#if pistasRejilla.length > 0 && pistasRejilla.length < (total ?? 0)}
+        <div use:alFinal class="centinela"></div>
+      {/if}
+    {/if}
+  {:else if vista === 'albumes' && albumes.length === 0 && gridListo}
+    {@render vacia(Boolean(textoAplicado) || estadoBiblioteca.albumes.grupo !== 'todos')}
+  {:else if vista === 'artistas' && artistas.length === 0 && gridListo}
+    {@render vacia(Boolean(textoAplicado))}
+  {:else if vista === 'albumes'}
+    <ul
+      class="rejilla"
+      class:sm={modoRejilla === 'sm'}
+      class:md={modoRejilla === 'md'}
+      class:lg={modoRejilla === 'lg'}
+      class:lista={modoRejilla === 'lista'}
+    >
+      {#each albumes as a (a.id)}
+        <li>
+          <a class="tarjeta" href={`/biblioteca/album?id=${a.id}`}>
+            <span class="caratula">
+              {#if a.tienePortada}
+                <img src={urlPortada('album', a.id, 320)} alt="" loading="lazy" decoding="async" />
+              {:else}
+                <Icon nombre="album" tamano={40} />
+              {/if}
+            </span>
+            <span class="nombre" title={a.titulo}>{a.titulo}</span>
+            <span class="sub">{[a.artista, a.anio ?? ''].filter((x) => x !== '').join(' · ')}</span>
+          </a>
+        </li>
+      {/each}
+    </ul>
+    {#if albumes.length > 0 && albumes.length < totalAlbumes}
+      <div use:alFinal class="centinela"></div>
+    {/if}
+  {:else}
+    <ul
+      class="rejilla"
+      class:sm={modoRejilla === 'sm'}
+      class:md={modoRejilla === 'md'}
+      class:lg={modoRejilla === 'lg'}
+      class:lista={modoRejilla === 'lista'}
+    >
+      {#each artistas as a (a.id)}
+        <li>
+          <a class="tarjeta artista" href={`/biblioteca/artista?id=${a.id}`}>
+            <span class="caratula redonda">
+              {#if a.tieneImagen}
+                <img
+                  src={urlPortada('artista', a.id, 320)}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                />
+              {:else}
+                <Icon nombre="artista" tamano={40} />
+              {/if}
+            </span>
+            <span class="nombre" title={a.nombre}>{a.nombre}</span>
+            <span class="sub">{textos.biblioteca.artista.resumen(a.numAlbumes, a.numPistas)}</span>
+          </a>
+        </li>
+      {/each}
+    </ul>
+    {#if artistas.length > 0 && artistas.length < totalArtistas}
+      <div use:alFinal class="centinela"></div>
+    {/if}
+  {/if}
+</section>
+
+<style>
+  .vista {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-3);
+    height: 100%;
+  }
+
+  .cabecera {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ns-espacio-4);
+  }
+
+  .cabecera-info {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-1);
+  }
+
+  h1 {
+    margin: 0;
+    font-size: var(--ns-texto-xl);
+    font-weight: 700;
+  }
+
+  .cuenta {
+    margin: 0;
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-sm);
+  }
+
+  .pestanas {
+    display: flex;
+    background: var(--m3c-surface-container);
+    border-radius: var(--ns-radio-pleno);
+    padding: 2px;
+    gap: var(--ns-espacio-1);
+    border: 1px solid var(--m3c-outline-variant);
+  }
+
+  .pestana {
+    min-width: 5.5rem;
+    height: 2.125rem;
+    padding: 0 var(--ns-espacio-3);
+    border: none;
+    border-radius: var(--ns-radio-pleno);
+    background: transparent;
+    color: var(--m3c-on-surface-variant);
+    font: inherit;
+    font-size: var(--ns-texto-sm);
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .pestana:hover:not(.activa) {
+    background: var(--m3c-surface-container-high);
+    color: var(--m3c-on-surface);
+  }
+
+  .pestana.activa {
+    background: var(--m3c-surface-container-highest);
+    color: var(--m3c-primary);
+    font-weight: 700;
+    box-shadow: 0 1px 3px var(--m3c-shadow);
+  }
+
+  .barra-filtros {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ns-espacio-3);
+  }
+
+  .filtros-izq {
+    display: flex;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+    flex: 1 1 24rem;
+    max-width: 44rem;
+  }
+
+  .filtros-der {
+    display: flex;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+    flex-wrap: wrap;
+    margin-left: auto;
+  }
+
+  .fichas {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+  }
+
+  .ficha {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--ns-espacio-1);
+    height: 2.125rem;
+    padding: 0 var(--ns-espacio-3);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-surface-container);
+    color: var(--m3c-on-surface-variant);
+    font: inherit;
+    font-size: var(--ns-texto-xs);
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease,
+      border-color 120ms ease;
+  }
+
+  .ficha:hover:not(.activa) {
+    background: var(--m3c-surface-container-high);
+    color: var(--m3c-on-surface);
+  }
+
+  .ficha.activa {
+    border-color: var(--m3c-primary);
+    background: var(--m3c-secondary-container);
+    color: var(--m3c-on-secondary-container);
+    font-weight: 700;
+  }
+
+  .filtro-buscar {
+    display: flex;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+    height: 2.125rem;
+    width: 100%;
+    padding: 0 var(--ns-espacio-3);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-pleno);
+    background: var(--m3c-surface-container);
+    color: var(--m3c-on-surface-variant);
+    transition:
+      border-color 120ms ease,
+      background 120ms ease;
+  }
+
+  .filtro-buscar:focus-within {
+    border-color: var(--m3c-primary);
+    background: var(--m3c-surface-container-high);
+  }
+
+  /* La caja entera ya marca el foco; el contorno del propio campo, dentro,
+     dibujaba un segundo marco. */
+  .filtro-buscar input:focus-visible {
+    outline-color: transparent;
+  }
+
+  .filtro-buscar input {
+    flex: 1;
+    width: 100%;
+    border: none;
+    background: none;
+    color: var(--m3c-on-surface);
+    font: inherit;
+    font-size: var(--ns-texto-xs);
+  }
+
+  .control-orden {
+    display: flex;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+  }
+
+  .lista {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .lista > :global(.lista) {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .densidades {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-pleno);
+    overflow: hidden;
+    background: var(--m3c-surface-container);
+  }
+
+  .boton-densidad {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.125rem;
+    height: 2.125rem;
+    border: none;
+    background: none;
+    color: var(--m3c-on-surface-variant);
+    cursor: pointer;
+    transition:
+      background 120ms ease,
+      color 120ms ease;
+  }
+
+  .boton-densidad:hover {
+    background: var(--m3c-surface-container-high);
+    color: var(--m3c-on-surface);
+  }
+
+  .boton-densidad.activa {
+    background: var(--m3c-secondary-container);
+    color: var(--m3c-on-secondary-container);
+  }
+
+  .rejilla {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+    gap: var(--ns-espacio-4);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  /* Lo que queda fuera de la vista no se pinta: con 120 carátulas con sombra por
+     página, pintarlas todas era lo que hacía pesado el desplazamiento. */
+  .rejilla > li {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 15rem;
+  }
+
+  .rejilla.sm {
+    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    gap: var(--ns-espacio-2);
+  }
+
+  .rejilla.md {
+    grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+    gap: var(--ns-espacio-4);
+  }
+
+  .rejilla.lg {
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+    gap: var(--ns-espacio-5);
+  }
+
+  .rejilla.lista {
+    grid-template-columns: 1fr;
+    gap: var(--ns-espacio-1);
+  }
+
+  .rejilla.lista .tarjeta {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--ns-espacio-3);
+    padding: var(--ns-espacio-2);
+  }
+
+  .rejilla.lista .caratula {
+    width: 3.5rem;
+    height: 3.5rem;
+    flex: 0 0 3.5rem;
+  }
+
+  .tarjeta {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-2);
+    padding: var(--ns-espacio-3);
+    border-radius: var(--ns-radio-md);
+    color: inherit;
+    text-decoration: none;
+    background: transparent;
+    transition: background 140ms ease;
+  }
+
+  .tarjeta:hover {
+    background: var(--m3c-surface-container);
+  }
+
+  .caratula {
+    display: grid;
+    place-items: center;
+    width: 100%;
+    aspect-ratio: 1;
+    overflow: hidden;
+    padding: 0;
+    border: none;
+    border-radius: var(--ns-radio-sm);
+    background: var(--m3c-surface-container-highest);
+    color: var(--m3c-on-surface-variant);
+    box-shadow: 0 2px 6px var(--m3c-shadow);
+    cursor: pointer;
+    transition:
+      transform 160ms ease,
+      box-shadow 160ms ease;
+  }
+
+  .tarjeta:hover .caratula {
+    transform: scale(1.02);
+    box-shadow: 0 6px 14px var(--m3c-shadow);
+  }
+
+  .caratula.redonda {
+    border-radius: var(--ns-radio-pleno);
+  }
+
+  .caratula img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .nombre,
+  .sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nombre {
+    font-weight: 700;
+    font-size: var(--ns-texto-sm);
+  }
+
+  .sub {
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-xs);
+  }
+
+  .artista {
+    text-align: center;
+  }
+
+  .centinela {
+    height: 1px;
+  }
+</style>

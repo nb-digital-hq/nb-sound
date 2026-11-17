@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: mailto:nbdigitalsas@gmail.com?subject=%5BNB%20Sound%5D%5BSeguridad%5D%20
+    about: "Do not open a public issue. Email nbdigitalsas@gmail.com with the subject prefix [NB Sound][Seguridad]; reports without it are very likely not to be read."
+  - name: Read the documentation
+    url: https://github.com/nb-digital-hq/nb-sound/tree/main/docs
+    about: The documentation is the single source of truth of the project.

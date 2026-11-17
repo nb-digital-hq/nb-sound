@@ -1,0 +1,25 @@
+# Dependabot no abre pull requests de versión (límite 0): las alertas de
+# seguridad siguen activas y las actualizaciones se hacen a mano, verificadas en
+# local con la suite completa. Ver docs/audit/supply-chain.md
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0

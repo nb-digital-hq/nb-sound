@@ -1,0 +1,353 @@
+<!--
+  @component
+  La cola de reproducción: título y Vaciar (que deja la que suena), la cuenta y la duración total, y cada fila con su portada, la
+  insignia Sonando o Pausada, su duración, reproducir y quitar. Se reordena
+  arrastrando o, con el teclado, con Alt+Arriba y Alt+Abajo sobre la fila.
+-->
+<script lang="ts">
+  import { untrack } from 'svelte';
+  import { type PistaResumen, pistasResumen, urlPortada } from '#lib/core/ipc/index.ts';
+  import { duracionLarga } from '#lib/core/formato.ts';
+  import { formatoTiempo, reproductor } from '#lib/core/reproductor.svelte.ts';
+  import { textos } from '#lib/i18n/index.ts';
+
+  import Icon from './Icon.svelte';
+
+  const t = textos.cola;
+  const i = $derived(reproductor.instantanea);
+
+  /** Los datos de cada id de la cola, pedidos por tramos de 500. */
+  let datos = $state(new Map<number, PistaResumen>());
+  $effect(() => {
+    const faltan = i.cola.filter((id) => !datos.has(id));
+    if (faltan.length === 0) return;
+    void (async () => {
+      const nuevo = new Map(datos);
+      for (let k = 0; k < faltan.length; k += 500) {
+        for (const p of await pistasResumen(faltan.slice(k, k + 500))) nuevo.set(p.id, p);
+      }
+      datos = nuevo;
+    })();
+  });
+
+  const total = $derived(i.cola.reduce((s, id) => s + (datos.get(id)?.duracionSeg ?? 0), 0));
+
+  let arrastrada = $state<number | null>(null);
+
+  /*
+   * Solo se pintan las filas a la vista, más un margen. Reproducir la biblioteca
+   * entera deja miles de canciones en la cola, y pintarlas todas con su portada
+   * congelaba la aplicación al abrir la cola, aunque fuera para vaciarla.
+   */
+  const MARGEN = 8;
+  let lista = $state<HTMLOListElement>();
+  let scrollTop = $state(0);
+  let altoVista = $state(0);
+  let remPx = $state(16);
+  const paso = $derived(remPx * 3.75);
+  const desde = $derived(Math.max(0, Math.floor(scrollTop / paso) - MARGEN));
+  const hasta = $derived(
+    Math.min(i.cola.length, Math.ceil((scrollTop + altoVista) / paso) + MARGEN)
+  );
+
+  $effect(() => {
+    if (!lista) return;
+    remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    // Al abrir, la que suena a la vista.
+    const indice = untrack(() => reproductor.instantanea.indiceCola) ?? 0;
+    lista.scrollTop = Math.max(0, (indice - 2) * remPx * 3.75);
+  });
+
+  function mover(desde: number, hasta: number) {
+    if (hasta < 0 || hasta >= i.cola.length || desde === hasta) return;
+    void reproductor.orden({ tipo: 'mover', desde, hasta });
+  }
+
+  function alPulsar(e: KeyboardEvent, k: number) {
+    if (!e.altKey) return;
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      mover(k, k - 1);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      mover(k, k + 1);
+    }
+  }
+</script>
+
+<section class="panel" aria-label={t.titulo}>
+  <header>
+    <h2>{t.titulo}</h2>
+    <button
+      type="button"
+      class="boton"
+      disabled={i.cola.length <= 1}
+      onclick={() => reproductor.orden({ tipo: 'vaciar', salvoLaActual: true })}
+    >
+      {t.vaciar}
+    </button>
+  </header>
+  <div class="fichas">
+    <span class="ficha acento">{textos.biblioteca.cuentaPistas(i.cola.length)}</span>
+    <span class="ficha">{duracionLarga(total)}</span>
+  </div>
+
+  {#if i.cola.length === 0}
+    <p class="vacio">{t.vacia}</p>
+  {:else}
+    <ol
+      bind:this={lista}
+      bind:clientHeight={altoVista}
+      onscroll={(e) => (scrollTop = e.currentTarget.scrollTop)}
+    >
+      <li class="hueco" aria-hidden="true" style:height={`${desde * paso}px`}></li>
+      {#each i.cola.slice(desde, hasta) as id, j (`${id}-${desde + j}`)}
+        {@const k = desde + j}
+        {@const p = datos.get(id)}
+        {@const actual = k === i.indiceCola}
+        <!-- El teclado llega desde los botones de la fila: Alt+Arriba y Alt+Abajo
+             mueven, que es el equivalente de arrastrar. -->
+        <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+        <li
+          class="fila"
+          class:actual
+          class:destino={arrastrada !== null && arrastrada !== k}
+          draggable="true"
+          onkeydown={(e) => alPulsar(e, k)}
+          ondragstart={() => (arrastrada = k)}
+          ondragend={() => (arrastrada = null)}
+          ondragover={(e) => e.preventDefault()}
+          ondrop={(e) => {
+            e.preventDefault();
+            if (arrastrada !== null) mover(arrastrada, k);
+            arrastrada = null;
+          }}
+        >
+          <span class="asa" aria-hidden="true"><Icon nombre="menu" tamano={16} /></span>
+          <span class="portada" aria-hidden="true">
+            {#if p?.tienePortada}<img
+                src={urlPortada('pista', id, 64)}
+                alt=""
+                decoding="async"
+              />{:else}<Icon nombre="cancion" tamano={16} />{/if}
+          </span>
+          <span class="datos">
+            <span class="titulo">
+              <span class="texto-titulo">{p?.titulo ?? ''}</span>
+              {#if actual}
+                <span class="insignia">{reproductor.sonando ? t.sonando : t.pausada}</span>
+              {/if}
+            </span>
+            <span class="sub">{p ? `${p.artista} · ${p.album}` : ''}</span>
+          </span>
+          <span class="duracion">{p ? formatoTiempo(p.duracionSeg) : ''}</span>
+          <button
+            type="button"
+            class="mini"
+            aria-label={t.reproducir(p?.titulo ?? '')}
+            title={t.moverConTeclado}
+            onclick={() => reproductor.orden({ tipo: 'reproducirIndice', indice: k })}
+          >
+            <Icon nombre="reproducir" tamano={14} />
+          </button>
+          <button
+            type="button"
+            class="mini"
+            aria-label={t.quitar(p?.titulo ?? '')}
+            onclick={() => reproductor.orden({ tipo: 'quitar', indice: k })}
+          >
+            <Icon nombre="cerrar" tamano={14} />
+          </button>
+        </li>
+      {/each}
+      <li
+        class="hueco"
+        aria-hidden="true"
+        style:height={`${(i.cola.length - hasta) * paso}px`}
+      ></li>
+    </ol>
+  {/if}
+</section>
+
+<style>
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ns-espacio-2);
+    width: min(26rem, 90vw);
+    max-height: min(32rem, 70vh);
+    padding: var(--ns-espacio-3);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-lg);
+    background: var(--m3c-surface-container-high);
+    color: var(--m3c-on-surface);
+    box-shadow: var(--m3-elevation-3, none);
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  h2 {
+    margin: 0;
+    font-size: var(--ns-texto-lg);
+  }
+
+  .boton {
+    height: 2.25rem;
+    padding: 0 var(--ns-espacio-4);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-sm);
+    background: none;
+    color: var(--m3c-on-surface);
+    font: inherit;
+    font-size: var(--ns-texto-sm);
+    cursor: pointer;
+  }
+
+  .boton:disabled {
+    opacity: 0.38;
+    cursor: default;
+  }
+
+  .fichas {
+    display: flex;
+    gap: var(--ns-espacio-2);
+  }
+
+  .ficha {
+    padding: 0 var(--ns-espacio-2);
+    border: 1px solid var(--m3c-outline-variant);
+    border-radius: var(--ns-radio-pleno);
+    font-size: var(--ns-texto-xs);
+    font-weight: 600;
+  }
+
+  .ficha.acento {
+    border-color: var(--m3c-primary);
+    color: var(--m3c-primary);
+  }
+
+  ol {
+    display: block;
+    margin: 0;
+    /* Un carril propio para la barra de desplazamiento: las de WebKitGTK flotan
+       encima y tapaban la duración y el botón de quitar de cada fila. */
+    padding: 0 var(--ns-espacio-3) 0 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    list-style: none;
+  }
+
+  .hueco {
+    display: block;
+  }
+
+  /* Alto fijo (3,5 rem más 0,25 de separación = el `paso` del script). */
+  .fila {
+    box-sizing: border-box;
+    height: 3.5rem;
+    margin-bottom: 0.25rem;
+    display: grid;
+    grid-template-columns: 1rem 2.5rem minmax(0, 1fr) auto auto auto;
+    align-items: center;
+    gap: var(--ns-espacio-2);
+    padding: var(--ns-espacio-2);
+    border: 1px solid transparent;
+    border-radius: var(--ns-radio-md);
+    background: var(--m3c-surface-container);
+  }
+
+  .fila.actual {
+    border-color: var(--m3c-primary);
+    background: var(--m3c-secondary-container);
+    color: var(--m3c-on-secondary-container);
+  }
+
+  .fila.destino {
+    border-style: dashed;
+    border-color: var(--m3c-outline);
+  }
+
+  .asa {
+    color: var(--m3c-on-surface-variant);
+    cursor: grab;
+  }
+
+  .portada {
+    display: grid;
+    place-items: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    overflow: hidden;
+    border-radius: var(--ns-radio-sm);
+    background: var(--m3c-surface-container-highest);
+  }
+
+  .portada img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .datos {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .texto-titulo,
+  .sub {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* El título se corta antes que la insignia: se veía "Vuelie - From… (…)". */
+  .titulo {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    font-weight: 700;
+    font-size: var(--ns-texto-sm);
+  }
+
+  .sub,
+  .duracion {
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-xs);
+  }
+
+  .insignia {
+    flex: 0 0 auto;
+    margin-left: var(--ns-espacio-2);
+    padding: 0 var(--ns-espacio-2);
+    border: 1px solid var(--m3c-primary);
+    border-radius: var(--ns-radio-pleno);
+    color: var(--m3c-primary);
+    font-size: var(--ns-texto-xs);
+  }
+
+  .mini {
+    display: grid;
+    place-items: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: none;
+    border-radius: var(--ns-radio-sm);
+    background: none;
+    color: var(--m3c-on-surface-variant);
+    cursor: pointer;
+  }
+
+  .mini:hover {
+    background: var(--m3c-surface-container-highest);
+  }
+
+  .vacio {
+    color: var(--m3c-on-surface-variant);
+    font-size: var(--ns-texto-sm);
+  }
+</style>

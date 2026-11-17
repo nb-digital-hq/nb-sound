@@ -1,0 +1,59 @@
+name: Network leak report
+description: The application contacted a network host without your explicit consent
+labels: ["privacy", "network-leak"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        NB Sound promises that **nothing leaves the device without explicit consent**
+        (see [PRIVACY.md](../blob/main/PRIVACY.md)). Every outgoing connection must pass through a single
+        network gate that checks the global online-services switch and a per-service consent.
+        A connection that bypasses it is treated as a critical defect.
+
+        If the leak can be exploited by a third party, report it privately through [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: input
+    id: host
+    attributes:
+      label: Destination host and port
+      placeholder: "example.org:443"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: What you were doing
+      description: The action in the application immediately before the connection.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: switch
+    attributes:
+      label: State of "Use online services" (Settings, Privacy)
+      options:
+        - Off (no connection should happen at all)
+        - On, but this service was switched off
+        - On and switched on, but the data sent exceeded what was described
+        - I do not know
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: >
+        Output of a tool such as `ss -tp`, OpenSnitch, Wireshark or a firewall log. Remove personal data first.
+      render: text
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: NB Sound version
+      placeholder: "1.0.0"
+    validations:
+      required: true

@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using these metadata."
+title: "NB Sound"
+abstract: >-
+  Local-first desktop application for your own music library: gapless playback, automatic cataloguing,
+  on-device karaoke, a private DJ that mixes sessions, an offline mashup composer and a companion mobile
+  sync, with no account and no telemetry.
+type: software
+authors:
+  - name: "NB Digital"
+  - name: "The NB Sound Authors"
+version: "1.0.0"
+license: Apache-2.0
+repository-code: "https://github.com/nb-digital-hq/nb-sound"
+keywords:
+  - local-first
+  - music player
+  - music library
+  - karaoke
+  - dj
+  - privacy
+  - tauri
+  - rust
+  - svelte
+date-released: 2026-11-17

@@ -1,0 +1,91 @@
+# ---------------------------------------------------------------------------
+# NB Sound
+# Regla: en el repositorio solo entra código fuente y documentación.
+# Nada generado, nada descargado, nada secreto, ningún binario precompilado.
+# ---------------------------------------------------------------------------
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+*.tsbuildinfo
+
+# SvelteKit / Vite
+.svelte-kit/
+.svelte-kit-e2e/
+/build/
+/build-e2e/
+/package/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Rust / Cargo / Tauri
+target/
+**/*.rs.bk
+src-tauri/gen/
+
+# Binarios externos (fpcalc, ONNX Runtime): se obtienen con hash fijado
+# con scripts/fetch-binarios.mjs y nunca se versionan (ADR-006).
+src-tauri/binarios/
+src-tauri/vendor/*
+!src-tauri/vendor/nb-shared/
+*.so
+*.so.*
+*.dylib
+*.dll
+*.a
+*.lib
+
+# Artefactos de distribución
+dist/
+*.AppImage
+*.deb
+*.rpm
+*.dmg
+*.msi
+*.exe
+
+# Modelos: son agregados que se descargan desde la aplicación (ADR-006)
+*.onnx
+*.pb
+models/
+
+# Configuración de herramientas agénticas: nunca se versiona (AGENTS.md)
+.claude/
+.gemini/
+CLAUDE.md
+GEMINI.md
+
+# Secretos y entorno
+.env
+.env.*
+!.env.example
+*.pem
+# Las claves públicas de verificación sí se versionan.
+!docs/architecture/api/*.pem
+*.p12
+*.pfx
+secrets/
+
+# Bases de datos y datos locales de desarrollo
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Resultados de pruebas y cobertura
+coverage/
+test-results/
+playwright-report/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.directory
+
+
+# Staging editorial de CI; nunca incluye credenciales.
+/.launcher-publication/
